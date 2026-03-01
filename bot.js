@@ -421,6 +421,25 @@ bot.command('debug', async (ctx) => {
     ctx.reply('❌ Debug failed: ' + e.message);
   }
 });
+bot.command('debug2', async (ctx) => {
+  if (!checkReady(ctx)) return;
+  const screenshot = await page.screenshot({ type: 'jpeg', quality: 80, fullPage: false });
+  await ctx.replyWithPhoto({ source: screenshot }, { caption: '🖥 Full page view' });
+  
+  const info = await page.evaluate(() => {
+    const all = Array.from(document.querySelectorAll('*'));
+    return all.filter(el => {
+      const r = el.getBoundingClientRect();
+      return r.width > 5 && r.height > 5 && r.y > 600;
+    }).map(el => ({
+      tag: el.tagName,
+      class: (el.className || '').toString().substring(0, 60),
+      rect: { x: Math.round(el.getBoundingClientRect().x), y: Math.round(el.getBoundingClientRect().y), w: Math.round(el.getBoundingClientRect().width), h: Math.round(el.getBoundingClientRect().height) }
+    })).slice(0, 40);
+  });
+  
+  await ctx.reply(JSON.stringify(info, null, 1).substring(0, 4000));
+});
 
 bot.launch();
 console.log('🤖 CrocoDraw Bot started!');
@@ -432,4 +451,5 @@ http.createServer((req, res) => res.end('CrocoDraw Bot running')).listen(process
 // Graceful shutdown
 process.once('SIGINT', () => { bot.stop('SIGINT'); if (browser) browser.close(); });
 process.once('SIGTERM', () => { bot.stop('SIGTERM'); if (browser) browser.close(); });
+
 
