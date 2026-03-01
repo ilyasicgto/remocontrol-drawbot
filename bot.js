@@ -440,158 +440,193 @@ bot.command('debug2', async (ctx) => {
   
   await ctx.reply(JSON.stringify(info, null, 1).substring(0, 4000));
 });
-// Add this command to bot.js before bot.launch()
-// Usage: /fulldebug
+// /deepdebug command — paste into bot.js before bot.launch()
 
-bot.command('fulldebug', async (ctx) => {
+bot.command('deepdebug', async (ctx) => {
   if (!checkReady(ctx)) return;
-  await ctx.reply('🔍 Full UI scan running...');
+  await ctx.reply('🔬 Starting deep UI scan — 8 steps, please wait...');
 
-  try {
-    // 1. Full page screenshot
-    const fullScreenshot = await page.screenshot({ type: 'jpeg', quality: 75, fullPage: false });
-    await ctx.replyWithPhoto({ source: fullScreenshot }, { caption: '📸 Full page view' });
+  const results = {};
 
-    // 2. Scan everything
-    const data = await page.evaluate(() => {
+  async function scanDOM(label) {
+    return await page.evaluate((lbl) => {
       const getRect = el => {
         const r = el.getBoundingClientRect();
         return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
       };
-      const getStyle = el => {
+      const all = Array.from(document.querySelectorAll('*'));
+      const visible = all.filter(el => {
+        const r = el.getBoundingClientRect();
+        return r.width > 3 && r.height > 3 && r.width < 1280 && r.height < 900;
+      }).map(el => {
         const s = window.getComputedStyle(el);
         return {
-          bg: s.backgroundColor,
-          bgImg: (s.backgroundImage || '').substring(0, 80),
+          tag: el.tagName,
+          class: (el.className || '').toString().substring(0, 80),
+          text: el.textContent.trim().substring(0, 50),
+          rect: getRect(el),
           cursor: s.cursor,
-          display: s.display,
+          bg: s.backgroundColor,
+          bgImg: (s.backgroundImage || '').substring(0, 200),
+          hasClick: s.cursor === 'pointer',
+          isGradient: (s.backgroundImage || '').includes('gradient'),
+          isInput: el.tagName === 'INPUT',
+          inputType: el.tagName === 'INPUT' ? el.type : null,
+          inputMin: el.tagName === 'INPUT' ? el.min : null,
+          inputMax: el.tagName === 'INPUT' ? el.max : null,
+          inputVal: el.tagName === 'INPUT' ? el.value : null,
         };
-      };
-
-      const all = Array.from(document.querySelectorAll('*'));
-
-      // ALL clickable elements
-      const clickable = all.filter(el => {
-        const s = window.getComputedStyle(el);
-        const r = el.getBoundingClientRect();
-        return (
-          s.cursor === 'pointer' ||
-          el.onclick !== null ||
-          el.tagName === 'BUTTON' ||
-          el.tagName === 'A' ||
-          (el.className && typeof el.className === 'string' && /btn|button|click|switch|tool|action/i.test(el.className))
-        ) && r.width > 5 && r.height > 5;
-      }).map(el => ({
-        tag: el.tagName,
-        class: (el.className || '').toString().substring(0, 60),
-        text: el.textContent.trim().substring(0, 30),
-        rect: getRect(el),
-        style: getStyle(el),
-      }));
-
-      // ALL inputs
-      const inputs = all.filter(el =>
-        el.tagName === 'INPUT' || el.tagName === 'SELECT' || el.tagName === 'TEXTAREA'
-      ).map(el => ({
-        tag: el.tagName,
-        type: el.type,
-        class: (el.className || '').toString().substring(0, 60),
-        value: (el.value || '').substring(0, 30),
-        placeholder: el.placeholder || '',
-        min: el.min, max: el.max, step: el.step,
-        rect: getRect(el),
-        style: getStyle(el),
-      }));
-
-      // ALL elements with background gradients (sliders, color pickers)
-      const gradients = all.filter(el => {
-        const s = window.getComputedStyle(el);
-        const r = el.getBoundingClientRect();
-        return (s.backgroundImage || '').includes('gradient') && r.width > 20 && r.height > 3;
-      }).map(el => ({
-        tag: el.tagName,
-        class: (el.className || '').toString().substring(0, 60),
-        rect: getRect(el),
-        bgImg: (window.getComputedStyle(el).backgroundImage || '').substring(0, 120),
-      }));
-
-      // ALL elements with event listeners (harder — check for known patterns)
-      const withListeners = all.filter(el => {
-        const r = el.getBoundingClientRect();
-        return r.width > 20 && r.height > 20 &&
-          (el.onmousedown || el.ontouchstart || el.onpointerdown ||
-           (el.className && typeof el.className === 'string' &&
-            /switch|tool|btn|color|brush|size|undo|redo|clear|layer/i.test(el.className)));
-      }).map(el => ({
-        tag: el.tagName,
-        class: (el.className || '').toString().substring(0, 80),
-        text: el.textContent.trim().substring(0, 30),
-        rect: getRect(el),
-        hasMousedown: !!el.onmousedown,
-        hasTouch: !!el.ontouchstart,
-        hasPointer: !!el.onpointerdown,
-      }));
-
-      // Page title and meta
-      const meta = {
-        title: document.title,
-        url: window.location.href.substring(0, 80),
-        viewport: { w: window.innerWidth, h: window.innerHeight },
-        canvasCount: document.querySelectorAll('canvas').length,
+      });
+      return {
+        label: lbl,
+        total: visible.length,
+        clickable: visible.filter(e => e.hasClick),
+        gradients: visible.filter(e => e.isGradient),
+        inputs: visible.filter(e => e.isInput),
         canvases: Array.from(document.querySelectorAll('canvas')).map(c => ({
+          class: (c.className||'').toString(),
           rect: getRect(c),
-          width: c.width,
-          height: c.height,
+          w: c.width, h: c.height,
         })),
+        // Everything new below y=400 (panels open here)
+        panels: visible.filter(e => e.rect.y > 400 && e.rect.w > 10),
       };
-
-      return { meta, clickable, inputs, gradients, withListeners };
-    });
-
-    // Send as JSON file
-    const json = JSON.stringify(data, null, 2);
-    const buf = Buffer.from(json, 'utf8');
-    await ctx.replyWithDocument(
-      { source: buf, filename: 'full_ui_debug.json' },
-      { caption: `📊 Full UI scan complete!\n\n` +
-        `🖱 Clickable elements: ${data.clickable.length}\n` +
-        `⌨️ Inputs: ${data.inputs.length}\n` +
-        `🎨 Gradients: ${data.gradients.length}\n` +
-        `👆 Event listeners: ${data.withListeners.length}\n` +
-        `🖼 Canvases: ${data.meta.canvasCount}\n` +
-        `📐 Viewport: ${data.meta.viewport.w}x${data.meta.viewport.h}`
-      }
-    );
-
-    // Also send just the key info as text
-    const summary = [
-      '=== CLICKABLE ELEMENTS ===',
-      ...data.clickable.slice(0, 20).map(el =>
-        `[${el.tag}] class="${el.class}" text="${el.text}" pos=(${el.rect.x},${el.rect.y}) size=${el.rect.w}x${el.rect.h} cursor=${el.style.cursor}`
-      ),
-      '\n=== INPUTS ===',
-      ...data.inputs.map(el =>
-        `[${el.tag}] type=${el.type} class="${el.class}" val="${el.value}" min=${el.min} max=${el.max} pos=(${el.rect.x},${el.rect.y})`
-      ),
-      '\n=== GRADIENTS (sliders/pickers) ===',
-      ...data.gradients.map(el =>
-        `[${el.tag}] class="${el.class}" pos=(${el.rect.x},${el.rect.y}) size=${el.rect.w}x${el.rect.h}\n  bg: ${el.bgImg}`
-      ),
-      '\n=== EVENT LISTENERS ===',
-      ...data.withListeners.slice(0, 20).map(el =>
-        `[${el.tag}] class="${el.class}" text="${el.text}" pos=(${el.rect.x},${el.rect.y}) mousedown=${el.hasMousedown} touch=${el.hasTouch} pointer=${el.hasPointer}`
-      ),
-    ].join('\n');
-
-    // Send summary in chunks (Telegram 4096 char limit)
-    for (let i = 0; i < summary.length; i += 4000) {
-      await ctx.reply('```\n' + summary.slice(i, i + 4000) + '\n```', { parse_mode: 'Markdown' });
-      await new Promise(r => setTimeout(r, 500));
-    }
-
-  } catch (e) {
-    ctx.reply('❌ Debug failed: ' + e.message);
+    }, label);
   }
+
+  async function step(label, action, closeAction) {
+    try {
+      // Reset — close anything open
+      await page.keyboard.press('Escape');
+      await sleep(300);
+
+      // Do the action
+      await action();
+      await sleep(800);
+
+      // Screenshot
+      const shot = await page.screenshot({ type: 'jpeg', quality: 70 });
+      await ctx.replyWithPhoto({ source: shot }, { caption: `📸 Step: ${label}` });
+
+      // Scan
+      const scan = await scanDOM(label);
+      results[label] = scan;
+      await ctx.reply(
+        `✅ ${label}\n` +
+        `Clickable: ${scan.clickable.length} | Gradients: ${scan.gradients.length} | Inputs: ${scan.inputs.length} | Panels: ${scan.panels.length}`
+      );
+
+      // Close
+      await closeAction();
+      await sleep(500);
+
+    } catch(e) {
+      await ctx.reply(`❌ Step "${label}" failed: ${e.message}`);
+      await page.keyboard.press('Escape');
+      await sleep(500);
+    }
+  }
+
+  // ── STEP 1: Baseline (nothing open) ─────────────────────────────────────────
+  await step('1_baseline',
+    async () => {}, // nothing to click
+    async () => {}
+  );
+
+  // ── STEP 2: Color picker ─────────────────────────────────────────────────────
+  await step('2_color_picker',
+    async () => await page.mouse.click(763, 709),
+    async () => await page.keyboard.press('Escape')
+  );
+
+  // ── STEP 3: Brush list ───────────────────────────────────────────────────────
+  await step('3_brush_list',
+    async () => await page.mouse.click(517, 709),
+    async () => await page.keyboard.press('Escape')
+  );
+
+  // ── STEP 4: Brush settings (open brush list, then click ⚙️ next to active brush) ──
+  await step('4_brush_settings',
+    async () => {
+      await page.mouse.click(517, 709); // open brush list
+      await sleep(600);
+      // Click the ⚙️ settings icon next to the active brush (first item)
+      const settingsBtn = await page.evaluate(() => {
+        const all = Array.from(document.querySelectorAll('*'));
+        const btn = all.find(el => {
+          const r = el.getBoundingClientRect();
+          return el.textContent.trim() === '⚙️' ||
+            ((el.className||'').toString().includes('setting') && r.y > 50 && r.y < 700);
+        });
+        if (btn) {
+          const r = btn.getBoundingClientRect();
+          return { x: r.x + r.width/2, y: r.y + r.height/2 };
+        }
+        return null;
+      });
+      if (settingsBtn) {
+        await page.mouse.click(settingsBtn.x, settingsBtn.y);
+      } else {
+        // Fallback: try clicking area where ⚙️ would be next to first brush item
+        await page.mouse.click(790, 91);
+      }
+    },
+    async () => await page.keyboard.press('Escape')
+  );
+
+  // ── STEP 5: Size control (click+drag ns-resize element) ──────────────────────
+  await step('5_size_control',
+    async () => {
+      // The ns-resize element is at (762, 774) — drag it up to open size panel
+      await page.mouse.move(762, 774);
+      await page.mouse.down();
+      await sleep(200);
+      await page.mouse.move(762, 700); // drag up
+      await sleep(300);
+      await page.mouse.up();
+    },
+    async () => await page.keyboard.press('Escape')
+  );
+
+  // ── STEP 6: Layers panel ─────────────────────────────────────────────────────
+  await step('6_layers_panel',
+    async () => await page.mouse.click(700, 774),
+    async () => await page.keyboard.press('Escape')
+  );
+
+  // ── STEP 7: Clear dialog ─────────────────────────────────────────────────────
+  await step('7_clear_dialog',
+    async () => await page.mouse.click(639, 774),
+    async () => {
+      // Click CANCEL not Clear!
+      const cancelled = await page.evaluate(() => {
+        const all = Array.from(document.querySelectorAll('*'));
+        const btn = all.find(el =>
+          el.textContent.trim() === 'Cancel' &&
+          el.getBoundingClientRect().width > 40
+        );
+        if (btn) { btn.click(); return true; }
+        return false;
+      });
+      if (!cancelled) await page.keyboard.press('Escape');
+    }
+  );
+
+  // ── STEP 8: Word/game settings (⚙️ in title bar) ────────────────────────────
+  await step('8_word_settings',
+    async () => await page.mouse.click(640, 17), // title area with ⚙️
+    async () => await page.keyboard.press('Escape')
+  );
+
+  // ── Send full JSON report ────────────────────────────────────────────────────
+  await ctx.reply('📦 Sending full report...');
+  const fullJson = JSON.stringify(results, null, 2);
+  await ctx.replyWithDocument(
+    { source: Buffer.from(fullJson, 'utf8'), filename: 'deepdebug_full.json' },
+    { caption: '📊 Complete deep debug — all 8 panels scanned' }
+  );
+
+  await ctx.reply('✅ Deep debug complete! Send the JSON file to dev.');
 });
 
 bot.launch();
@@ -604,6 +639,7 @@ http.createServer((req, res) => res.end('CrocoDraw Bot running')).listen(process
 // Graceful shutdown
 process.once('SIGINT', () => { bot.stop('SIGINT'); if (browser) browser.close(); });
 process.once('SIGTERM', () => { bot.stop('SIGTERM'); if (browser) browser.close(); });
+
 
 
 
