@@ -209,42 +209,30 @@ async function setColor(page, hex) {
 async function setBrushSize(page, targetSize) {
   const size = Math.max(1, Math.min(100, Math.round(targetSize)));
 
-  // Open color picker (widthSlider lives inside it)
-  await clickTool(page, 'colorball');
-  await sleep(600);
+  // Read current size from brush-info text e.g. "12px100%"
+  const currentSize = await page.evaluate(() => {
+    const el = document.querySelector('.brush-info');
+    if (!el) return 10;
+    const match = el.textContent.match(/(\d+)px/);
+    return match ? parseInt(match[1]) : 10;
+  });
 
-  // Set the vertical range input value
-  const success = await page.evaluate((s) => {
-    const input = document.querySelector('input.widthSlider');
-    if (!input) return false;
-    const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-    nativeSetter.call(input, String(s));
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-    input.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
-    return true;
-  }, size);
+  const diff = size - currentSize;
+  if (diff === 0) return;
 
-  await sleep(200);
-
-  // Also physically click the slider at the right position
-  // Slider is vertical: pos=(495,473) size=25x177, min=1 max=100
-  // top=473 (max=100), bottom=650 (min=1)
-  if (!success) {
-    const ratio = 1 - (size - 1) / 99; // 1=bottom, 100=top
-    const sliderY = 473 + ratio * 177;
-    await page.mouse.click(507, sliderY); // center x=495+12=507
-    await sleep(200);
-  }
-
-  // Close picker
+  // Click canvas center so keyboard events reach the app
   const bounds = await getCanvasBounds(page);
-  await page.mouse.click(bounds.x + bounds.width / 2, bounds.y + 30);
-  await sleep(300);
+  await page.mouse.click(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+  await sleep(150);
 
-  // Re-select brush
-  await clickTool(page, 'brush');
-  await sleep(200);
+  // Z = +1px per press, X = -1px per press
+  const key = diff > 0 ? 'z' : 'x';
+  const presses = Math.abs(diff);
+  for (let i = 0; i < presses; i++) {
+    await page.keyboard.press(key);
+    await sleep(20);
+  }
+  await sleep(100);
 }
 
 // ── Brush type selection ───────────────────────────────────────────────────────
