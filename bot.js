@@ -440,6 +440,159 @@ bot.command('debug2', async (ctx) => {
   
   await ctx.reply(JSON.stringify(info, null, 1).substring(0, 4000));
 });
+// Add this command to bot.js before bot.launch()
+// Usage: /fulldebug
+
+bot.command('fulldebug', async (ctx) => {
+  if (!checkReady(ctx)) return;
+  await ctx.reply('🔍 Full UI scan running...');
+
+  try {
+    // 1. Full page screenshot
+    const fullScreenshot = await page.screenshot({ type: 'jpeg', quality: 75, fullPage: false });
+    await ctx.replyWithPhoto({ source: fullScreenshot }, { caption: '📸 Full page view' });
+
+    // 2. Scan everything
+    const data = await page.evaluate(() => {
+      const getRect = el => {
+        const r = el.getBoundingClientRect();
+        return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
+      };
+      const getStyle = el => {
+        const s = window.getComputedStyle(el);
+        return {
+          bg: s.backgroundColor,
+          bgImg: (s.backgroundImage || '').substring(0, 80),
+          cursor: s.cursor,
+          display: s.display,
+        };
+      };
+
+      const all = Array.from(document.querySelectorAll('*'));
+
+      // ALL clickable elements
+      const clickable = all.filter(el => {
+        const s = window.getComputedStyle(el);
+        const r = el.getBoundingClientRect();
+        return (
+          s.cursor === 'pointer' ||
+          el.onclick !== null ||
+          el.tagName === 'BUTTON' ||
+          el.tagName === 'A' ||
+          (el.className && typeof el.className === 'string' && /btn|button|click|switch|tool|action/i.test(el.className))
+        ) && r.width > 5 && r.height > 5;
+      }).map(el => ({
+        tag: el.tagName,
+        class: (el.className || '').toString().substring(0, 60),
+        text: el.textContent.trim().substring(0, 30),
+        rect: getRect(el),
+        style: getStyle(el),
+      }));
+
+      // ALL inputs
+      const inputs = all.filter(el =>
+        el.tagName === 'INPUT' || el.tagName === 'SELECT' || el.tagName === 'TEXTAREA'
+      ).map(el => ({
+        tag: el.tagName,
+        type: el.type,
+        class: (el.className || '').toString().substring(0, 60),
+        value: (el.value || '').substring(0, 30),
+        placeholder: el.placeholder || '',
+        min: el.min, max: el.max, step: el.step,
+        rect: getRect(el),
+        style: getStyle(el),
+      }));
+
+      // ALL elements with background gradients (sliders, color pickers)
+      const gradients = all.filter(el => {
+        const s = window.getComputedStyle(el);
+        const r = el.getBoundingClientRect();
+        return (s.backgroundImage || '').includes('gradient') && r.width > 20 && r.height > 3;
+      }).map(el => ({
+        tag: el.tagName,
+        class: (el.className || '').toString().substring(0, 60),
+        rect: getRect(el),
+        bgImg: (window.getComputedStyle(el).backgroundImage || '').substring(0, 120),
+      }));
+
+      // ALL elements with event listeners (harder — check for known patterns)
+      const withListeners = all.filter(el => {
+        const r = el.getBoundingClientRect();
+        return r.width > 20 && r.height > 20 &&
+          (el.onmousedown || el.ontouchstart || el.onpointerdown ||
+           (el.className && typeof el.className === 'string' &&
+            /switch|tool|btn|color|brush|size|undo|redo|clear|layer/i.test(el.className)));
+      }).map(el => ({
+        tag: el.tagName,
+        class: (el.className || '').toString().substring(0, 80),
+        text: el.textContent.trim().substring(0, 30),
+        rect: getRect(el),
+        hasMousedown: !!el.onmousedown,
+        hasTouch: !!el.ontouchstart,
+        hasPointer: !!el.onpointerdown,
+      }));
+
+      // Page title and meta
+      const meta = {
+        title: document.title,
+        url: window.location.href.substring(0, 80),
+        viewport: { w: window.innerWidth, h: window.innerHeight },
+        canvasCount: document.querySelectorAll('canvas').length,
+        canvases: Array.from(document.querySelectorAll('canvas')).map(c => ({
+          rect: getRect(c),
+          width: c.width,
+          height: c.height,
+        })),
+      };
+
+      return { meta, clickable, inputs, gradients, withListeners };
+    });
+
+    // Send as JSON file
+    const json = JSON.stringify(data, null, 2);
+    const buf = Buffer.from(json, 'utf8');
+    await ctx.replyWithDocument(
+      { source: buf, filename: 'full_ui_debug.json' },
+      { caption: `📊 Full UI scan complete!\n\n` +
+        `🖱 Clickable elements: ${data.clickable.length}\n` +
+        `⌨️ Inputs: ${data.inputs.length}\n` +
+        `🎨 Gradients: ${data.gradients.length}\n` +
+        `👆 Event listeners: ${data.withListeners.length}\n` +
+        `🖼 Canvases: ${data.meta.canvasCount}\n` +
+        `📐 Viewport: ${data.meta.viewport.w}x${data.meta.viewport.h}`
+      }
+    );
+
+    // Also send just the key info as text
+    const summary = [
+      '=== CLICKABLE ELEMENTS ===',
+      ...data.clickable.slice(0, 20).map(el =>
+        `[${el.tag}] class="${el.class}" text="${el.text}" pos=(${el.rect.x},${el.rect.y}) size=${el.rect.w}x${el.rect.h} cursor=${el.style.cursor}`
+      ),
+      '\n=== INPUTS ===',
+      ...data.inputs.map(el =>
+        `[${el.tag}] type=${el.type} class="${el.class}" val="${el.value}" min=${el.min} max=${el.max} pos=(${el.rect.x},${el.rect.y})`
+      ),
+      '\n=== GRADIENTS (sliders/pickers) ===',
+      ...data.gradients.map(el =>
+        `[${el.tag}] class="${el.class}" pos=(${el.rect.x},${el.rect.y}) size=${el.rect.w}x${el.rect.h}\n  bg: ${el.bgImg}`
+      ),
+      '\n=== EVENT LISTENERS ===',
+      ...data.withListeners.slice(0, 20).map(el =>
+        `[${el.tag}] class="${el.class}" text="${el.text}" pos=(${el.rect.x},${el.rect.y}) mousedown=${el.hasMousedown} touch=${el.hasTouch} pointer=${el.hasPointer}`
+      ),
+    ].join('\n');
+
+    // Send summary in chunks (Telegram 4096 char limit)
+    for (let i = 0; i < summary.length; i += 4000) {
+      await ctx.reply('```\n' + summary.slice(i, i + 4000) + '\n```', { parse_mode: 'Markdown' });
+      await new Promise(r => setTimeout(r, 500));
+    }
+
+  } catch (e) {
+    ctx.reply('❌ Debug failed: ' + e.message);
+  }
+});
 
 bot.launch();
 console.log('🤖 CrocoDraw Bot started!');
@@ -451,5 +604,6 @@ http.createServer((req, res) => res.end('CrocoDraw Bot running')).listen(process
 // Graceful shutdown
 process.once('SIGINT', () => { bot.stop('SIGINT'); if (browser) browser.close(); });
 process.once('SIGTERM', () => { bot.stop('SIGTERM'); if (browser) browser.close(); });
+
 
 
