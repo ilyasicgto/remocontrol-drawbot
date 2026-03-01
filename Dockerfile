@@ -1,30 +1,42 @@
-FROM node:18-slim
+# Use official Node.js image with Debian (has apt-get)
+FROM node:20-slim
 
-# Install Chrome dependencies
+# Install Chromium and all dependencies
 RUN apt-get update && apt-get install -y \
-    libglib2.0-0 \
-    libnss3 \
-    libatk1.0-0 \
+    chromium \
+    fonts-liberation \
+    libappindicator3-1 \
+    libasound2 \
     libatk-bridge2.0-0 \
+    libatk1.0-0 \
     libcups2 \
-    libdrm2 \
-    libxkbcommon0 \
+    libdbus-1-3 \
+    libgdk-pixbuf2.0-0 \
+    libnspr4 \
+    libnss3 \
+    libx11-xcb1 \
     libxcomposite1 \
     libxdamage1 \
-    libxfixes3 \
     libxrandr2 \
-    libgbm1 \
-    libasound2 \
-    libpango-1.0-0 \
-    libcairo2 \
-    libatspi2.0-0 \
+    xdg-utils \
+    --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
+# Tell Puppeteer to skip downloading Chromium — use system one
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+
+# Set working directory
 WORKDIR /app
 
-COPY package.json .
+# Copy package files first (for layer caching)
+COPY package*.json ./
+
+# Install dependencies (no Chromium download)
 RUN npm install
 
+# Copy rest of the code
 COPY . .
 
-CMD ["node", "server.js"]
+# Start the bot
+CMD ["node", "bot.js"]
