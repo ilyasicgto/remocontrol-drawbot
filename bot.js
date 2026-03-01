@@ -360,6 +360,68 @@ bot.command('ai', async (ctx) => {
 });
 
 // ── Launch ─────────────────────────────────────────────────────────────────────
+// Debug — dumps DOM info to identify real selectors
+bot.command('debug', async (ctx) => {
+  if (!checkReady(ctx)) return;
+  await ctx.reply('🔍 Scanning CrocoDraw DOM...');
+  try {
+    const info = await page.evaluate(() => {
+      // Get all buttons with their text, classes, position
+      const buttons = Array.from(document.querySelectorAll('button')).map(b => ({
+        text: b.textContent.trim().substring(0, 30),
+        class: b.className.substring(0, 80),
+        rect: {
+          x: Math.round(b.getBoundingClientRect().x),
+          y: Math.round(b.getBoundingClientRect().y),
+          w: Math.round(b.getBoundingClientRect().width),
+          h: Math.round(b.getBoundingClientRect().height),
+        }
+      })).filter(b => b.rect.w > 20);
+
+      // Get all inputs
+      const inputs = Array.from(document.querySelectorAll('input')).map(i => ({
+        type: i.type,
+        class: i.className.substring(0, 80),
+        placeholder: i.placeholder,
+        value: i.value.substring(0, 20),
+        rect: {
+          x: Math.round(i.getBoundingClientRect().x),
+          y: Math.round(i.getBoundingClientRect().y),
+          w: Math.round(i.getBoundingClientRect().width),
+        }
+      }));
+
+      // Get all divs/spans with color-related classes
+      const colorEls = Array.from(document.querySelectorAll('*')).filter(el => {
+        const c = el.className || '';
+        return typeof c === 'string' && /color|hue|picker|brush|tool|size/i.test(c) && el.getBoundingClientRect().width > 10;
+      }).slice(0, 30).map(el => ({
+        tag: el.tagName,
+        class: el.className.substring(0, 80),
+        text: el.textContent.trim().substring(0, 20),
+        rect: {
+          x: Math.round(el.getBoundingClientRect().x),
+          y: Math.round(el.getBoundingClientRect().y),
+          w: Math.round(el.getBoundingClientRect().width),
+          h: Math.round(el.getBoundingClientRect().height),
+        }
+      }));
+
+      return { buttons, inputs, colorEls };
+    });
+
+    // Send as file (too long for message)
+    const text = JSON.stringify(info, null, 2);
+    const buf = Buffer.from(text, 'utf8');
+    await ctx.replyWithDocument(
+      { source: buf, filename: 'dom_debug.json' },
+      { caption: '📄 DOM structure — send this to dev' }
+    );
+  } catch (e) {
+    ctx.reply('❌ Debug failed: ' + e.message);
+  }
+});
+
 bot.launch();
 console.log('🤖 CrocoDraw Bot started!');
 
@@ -370,3 +432,4 @@ http.createServer((req, res) => res.end('CrocoDraw Bot running')).listen(process
 // Graceful shutdown
 process.once('SIGINT', () => { bot.stop('SIGINT'); if (browser) browser.close(); });
 process.once('SIGTERM', () => { bot.stop('SIGTERM'); if (browser) browser.close(); });
+
