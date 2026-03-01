@@ -115,7 +115,7 @@ async function selectFillTool(page)  { await clickTool(page, 'fill'); }
 async function undo(page) { await clickTool(page, 'undo'); }
 async function redo(page) { await clickTool(page, 'redo'); }
 
-async function clearCanvas(page) {
+async function clearCanvas_REPLACED(page) {
   await clickTool(page, 'clear');
   await sleep(300);
   // Confirm dialog if appears
@@ -295,6 +295,128 @@ async function screenshotCanvas(page) {
   const canvas = await page.$('canvas');
   if (!canvas) throw new Error('Canvas not found');
   return await canvas.screenshot({ type: 'jpeg', quality: 80 });
+}
+
+
+
+// ── FIXED FUNCTIONS (overrides above) ─────────────────────────────────────────
+
+// FIXED: Clear — clicks "Clear" button in confirmation dialog
+async function clearCanvas(page) {
+  await clickTool(page, 'clear');
+  await sleep(500);
+  // Click the "Clear" confirm button (not "Cancel")
+  await page.evaluate(() => {
+    const all = Array.from(document.querySelectorAll('*'));
+    const btn = all.find(el =>
+      el.textContent.trim() === 'Clear' &&
+      el.getBoundingClientRect().width > 40 &&
+      el.getBoundingClientRect().width < 300
+    );
+    if (btn) btn.click();
+  });
+  await sleep(300);
+}
+
+// FIXED: Size — uses X key (smaller) and Z key (bigger) 
+// currentSize is tracked globally, we press X or Z repeatedly
+async function setBrushSize(page, targetSize) {
+  // Click canvas first to make sure keyboard events go to the app
+  const bounds = await getCanvasBounds(page);
+  await page.mouse.click(bounds.x + bounds.width/2, bounds.y + bounds.height/2);
+  await sleep(200);
+
+  // Read current size from brush-info div
+  const currentSize = await page.evaluate(() => {
+    const el = document.querySelector('.brush-info');
+    if (!el) return 10;
+    const match = el.textContent.match(/[\d.]+/);
+    return match ? parseFloat(match[0]) : 10;
+  });
+
+  const diff = targetSize - currentSize;
+  if (Math.abs(diff) < 0.5) return; // already at target
+
+  // Z = bigger (+), X = smaller (-)
+  const key = diff > 0 ? 'z' : 'x';
+  const presses = Math.min(Math.round(Math.abs(diff) * 2), 80); // cap at 80 presses
+
+  for (let i = 0; i < presses; i++) {
+    await page.keyboard.press(key);
+    await sleep(15);
+  }
+  await sleep(100);
+}
+
+// FIXED: Color — set color then click brush tool to re-apply it
+async function setColor(page, hex) {
+  if (!hex.startsWith('#')) hex = '#' + hex;
+
+  // Open color picker
+  await clickTool(page, 'colorball');
+  await sleep(500);
+
+  const hsv = hexToHsv(hex);
+
+  // Get color picker element positions
+  const picker = await page.evaluate(() => {
+    const all = Array.from(document.querySelectorAll('*'));
+
+    const gradBox = all.find(el => {
+      const r = el.getBoundingClientRect();
+      const s = window.getComputedStyle(el);
+      return r.width > 80 && r.height > 80 && r.width < 500 &&
+             (s.backgroundImage||'').includes('gradient') && r.y > 300;
+    });
+
+    const hueEl = all.find(el => {
+      const r = el.getBoundingClientRect();
+      const s = window.getComputedStyle(el);
+      const bg = s.backgroundImage || s.background || '';
+      return r.width > 100 && r.height > 5 && r.height < 35 &&
+             (bg.includes('hsl') || bg.includes('linear-gradient')) && r.y > 300;
+    });
+
+    return {
+      grad: gradBox ? {
+        x: gradBox.getBoundingClientRect().left,
+        y: gradBox.getBoundingClientRect().top,
+        w: gradBox.getBoundingClientRect().width,
+        h: gradBox.getBoundingClientRect().height
+      } : null,
+      hue: hueEl ? {
+        x: hueEl.getBoundingClientRect().left,
+        y: hueEl.getBoundingClientRect().top,
+        w: hueEl.getBoundingClientRect().width,
+        h: hueEl.getBoundingClientRect().height
+      } : null,
+    };
+  });
+
+  if (picker.hue) {
+    await page.mouse.click(
+      picker.hue.x + hsv.h * picker.hue.w,
+      picker.hue.y + picker.hue.h / 2
+    );
+    await sleep(200);
+  }
+
+  if (picker.grad) {
+    await page.mouse.click(
+      picker.grad.x + hsv.s * picker.grad.w,
+      picker.grad.y + (1 - hsv.v) * picker.grad.h
+    );
+    await sleep(200);
+  }
+
+  // Close picker by clicking outside (click canvas area)
+  const bounds = await getCanvasBounds(page);
+  await page.mouse.click(bounds.x + bounds.width/2, bounds.y + 50);
+  await sleep(300);
+
+  // ⚡ KEY FIX: re-select brush tool so color gets applied
+  await clickTool(page, 'brush');
+  await sleep(200);
 }
 
 module.exports = {
