@@ -1,71 +1,372 @@
 /**
- * ai.js
- * Groq API integration — converts text description into drawing commands
+ * bot.js — CrocoDraw Controller Bot
+ * Controls CrocoDraw canvas via Puppeteer mouse simulation
  */
 
-const GROQ_API_KEY = process.env.GROQ_API_KEY;
+const { Telegraf } = require('telegraf');
+const puppeteer = require('puppeteer');
+const {
+  drawLine, drawCircle, drawRect, drawFreeStroke, clickCanvas,
+  selectBrushTool, selectFillTool, selectBrushType,
+  setColor, setBrushSize, undo, redo, clearCanvas,
+  screenshotCanvas, getCanvasBounds, sleep,
+} = require('./drawer');
+const { generateDrawingCommands } = require('./ai');
 
-const SYSTEM_PROMPT = `You are a drawing assistant. Given a word or description, you output a JSON array of drawing commands to draw it on a canvas.
+// ── Init ───────────────────────────────────────────────────────────────────────
+const BOT_TOKEN = process.env.BOT_TOKEN;
+if (!BOT_TOKEN) { console.error('❌ BOT_TOKEN missing'); process.exit(1); }
 
-Canvas is 1000x1000 units. Center is (500, 500).
+const bot = new Telegraf(BOT_TOKEN);
+let browser = null;
+let page = null;
+let isReady = false;
+let currentUrl = null;
 
-Available commands:
-- { "type": "color", "hex": "#ff0000" }
-- { "type": "size", "px": 5 }
-- { "type": "brush", "name": "Marker" }
-- { "type": "line", "x1": 100, "y1": 100, "x2": 400, "y2": 400 }
-- { "type": "circle", "cx": 500, "cy": 500, "r": 100 }
-- { "type": "rect", "x1": 200, "y1": 200, "x2": 600, "y2": 600 }
-- { "type": "stroke", "points": [{"x":100,"y":100},{"x":200,"y":150},...] }
-
-Rules:
-- Keep drawings simple, clear, recognizable
-- Use 5-20 commands max
-- Use dark colors on white background
-- Brush size 4-8px for outlines, larger for fills
-- Always start with color and size commands
-- For complex shapes use stroke with many points
-- Output ONLY valid JSON array, no explanation, no markdown backticks`;
-
-async function generateDrawingCommands(description) {
-  if (!GROQ_API_KEY) throw new Error('GROQ_API_KEY not set in environment variables');
-
-  const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${GROQ_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model: 'llama3-8b-8192',
-      max_tokens: 2000,
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: `Draw: ${description}` },
-      ],
-    }),
-  });
-
-  if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`Groq API error: ${err}`);
-  }
-
-  const data = await response.json();
-  const text = data.choices[0].message.content.trim();
-
-  // Strip markdown code fences if present
-  const clean = text.replace(/```json\n?|\n?```/g, '').trim();
-
-  let commands;
+// ── Browser launch ─────────────────────────────────────────────────────────────
+async function initBrowser(url) {
   try {
-    commands = JSON.parse(clean);
-  } catch (e) {
-    throw new Error(`Failed to parse AI response: ${text.substring(0, 200)}`);
-  }
+    // Close existing browser if any
+    if (browser) { await browser.close().catch(() => {}); browser = null; page = null; isReady = false; }
 
-  if (!Array.isArray(commands)) throw new Error('AI response is not an array');
-  return commands;
+    console.log('🚀 Launching browser...');
+    browser = await puppeteer.launch({
+      headless: true,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--window-size=1280,900',
+      ],
+    });
+
+    page = await browser.newPage();
+    await page.setViewport({ width: 1280, height: 900 });
+
+    // Set desktop user agent
+    await page.setUserAgent(
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    );
+
+    console.log(`🌐 Loading: ${url}`);
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+
+    // Wait for canvas to appear
+    await page.waitForSelector('canvas', { timeout: 30000 });
+    await sleep(2000); // Let app fully initialize
+
+    isReady = true;
+    currentUrl = url;
+    console.log('✅ CrocoDraw loaded & ready!');
+    return { success: true };
+  } catch (e) {
+    console.error('❌ Browser init failed:', e.message);
+    return { success: false, error: e.message };
+  }
 }
 
-module.exports = { generateDrawingCommands };
+// ── Send canvas screenshot to Telegram ────────────────────────────────────────
+async function sendPic(ctx) {
+  try {
+    const jpg = await screenshotCanvas(page);
+    await ctx.replyWithPhoto({ source: jpg }, { caption: '🖼 Current canvas' });
+  } catch (e) {
+    await ctx.reply('❌ Screenshot failed: ' + e.message);
+  }
+}
+
+// ── Helper: check if ready ─────────────────────────────────────────────────────
+function checkReady(ctx) {
+  if (!isReady) {
+    ctx.reply('❌ No canvas attached.\nSend a CrocoDraw URL or use /attach <url>');
+    return false;
+  }
+  return true;
+}
+
+// ── Parse hex color arg ────────────────────────────────────────────────────────
+function parseColor(str) {
+  if (!str) return null;
+  return str.startsWith('#') ? str : '#' + str;
+}
+
+// ── Execute AI drawing commands ────────────────────────────────────────────────
+async function executeCommands(page, commands) {
+  for (const cmd of commands) {
+    switch (cmd.type) {
+      case 'color':
+        await setColor(page, cmd.hex);
+        break;
+      case 'size':
+        await setBrushSize(page, cmd.px);
+        break;
+      case 'brush':
+        await selectBrushType(page, cmd.name);
+        break;
+      case 'line':
+        await drawLine(page, cmd.x1, cmd.y1, cmd.x2, cmd.y2);
+        break;
+      case 'circle':
+        await drawCircle(page, cmd.cx, cmd.cy, cmd.r);
+        break;
+      case 'rect':
+        await drawRect(page, cmd.x1, cmd.y1, cmd.x2, cmd.y2);
+        break;
+      case 'stroke':
+        await drawFreeStroke(page, cmd.points);
+        break;
+      case 'fill':
+        await selectFillTool(page);
+        await sleep(200);
+        await clickCanvas(page, cmd.x || 500, cmd.y || 500);
+        await selectBrushTool(page);
+        break;
+      default:
+        console.warn('Unknown command type:', cmd.type);
+    }
+    await sleep(100);
+  }
+}
+
+// ── Commands ───────────────────────────────────────────────────────────────────
+
+bot.command('start', (ctx) => {
+  ctx.reply(
+`🎨 *CrocoDraw Controller Bot*
+
+Send me a CrocoDraw URL to attach, then use these commands:
+
+*Setup:*
+/attach <url> — attach to drawing session
+
+*Drawing:*
+/line x1 y1 x2 y2 — draw a line
+/circle cx cy r — draw a circle
+/rect x1 y1 x2 y2 — draw a rectangle
+/stroke x1,y1 x2,y2 ... — free stroke
+
+*Tools:*
+/color #hex — set brush color
+/size px — set brush size (e.g. /size 5)
+/brush name — select brush type
+/fill #hex x y — fill at position
+
+*Actions:*
+/undo — undo last stroke
+/redo — redo
+/clear — clear canvas
+/pic — screenshot
+
+*AI Drawing:*
+/ai <description> — auto-draw from description
+
+*Coordinates:* 0–1000 scale (500,500 = center)`,
+    { parse_mode: 'Markdown' }
+  );
+});
+
+// Attach via command
+bot.command('attach', async (ctx) => {
+  const url = ctx.message.text.split(' ').slice(1).join(' ').trim();
+  if (!url || !url.startsWith('http')) {
+    return ctx.reply('Usage: /attach <crocodraw_url>');
+  }
+  const msg = await ctx.reply('⏳ Attaching to CrocoDraw...');
+  const result = await initBrowser(url);
+  if (result.success) {
+    await ctx.reply('✅ Attached! Canvas is ready.\nUse /pic to see current state.');
+  } else {
+    await ctx.reply('❌ Failed: ' + result.error);
+  }
+});
+
+// Auto-detect URL in message
+bot.on('text', async (ctx, next) => {
+  const text = ctx.message.text.trim();
+  if (text.startsWith('http') && text.includes('crocodraw')) {
+    const msg = await ctx.reply('⏳ Attaching to CrocoDraw...');
+    const result = await initBrowser(text);
+    if (result.success) {
+      await ctx.reply('✅ Attached! Canvas ready.\nUse /pic to see current state.');
+    } else {
+      await ctx.reply('❌ Failed: ' + result.error);
+    }
+    return;
+  }
+  return next();
+});
+
+// Screenshot
+bot.command('pic', async (ctx) => {
+  if (!checkReady(ctx)) return;
+  await sendPic(ctx);
+});
+
+// Draw line: /line x1 y1 x2 y2
+bot.command('line', async (ctx) => {
+  if (!checkReady(ctx)) return;
+  const args = ctx.message.text.split(' ').slice(1);
+  if (args.length < 4) return ctx.reply('Usage: /line x1 y1 x2 y2\nExample: /line 100 100 900 900');
+  const [x1, y1, x2, y2] = args.map(Number);
+  await ctx.reply('✏️ Drawing line...');
+  try {
+    await drawLine(page, x1, y1, x2, y2);
+    await sendPic(ctx);
+  } catch (e) { ctx.reply('❌ ' + e.message); }
+});
+
+// Draw circle: /circle cx cy r
+bot.command('circle', async (ctx) => {
+  if (!checkReady(ctx)) return;
+  const args = ctx.message.text.split(' ').slice(1);
+  if (args.length < 3) return ctx.reply('Usage: /circle cx cy r\nExample: /circle 500 500 200');
+  const [cx, cy, r] = args.map(Number);
+  await ctx.reply('⭕ Drawing circle...');
+  try {
+    await drawCircle(page, cx, cy, r);
+    await sendPic(ctx);
+  } catch (e) { ctx.reply('❌ ' + e.message); }
+});
+
+// Draw rectangle: /rect x1 y1 x2 y2
+bot.command('rect', async (ctx) => {
+  if (!checkReady(ctx)) return;
+  const args = ctx.message.text.split(' ').slice(1);
+  if (args.length < 4) return ctx.reply('Usage: /rect x1 y1 x2 y2\nExample: /rect 200 200 800 600');
+  const [x1, y1, x2, y2] = args.map(Number);
+  await ctx.reply('▭ Drawing rectangle...');
+  try {
+    await drawRect(page, x1, y1, x2, y2);
+    await sendPic(ctx);
+  } catch (e) { ctx.reply('❌ ' + e.message); }
+});
+
+// Free stroke: /stroke x1,y1 x2,y2 x3,y3 ...
+bot.command('stroke', async (ctx) => {
+  if (!checkReady(ctx)) return;
+  const args = ctx.message.text.split(' ').slice(1);
+  if (args.length < 2) return ctx.reply('Usage: /stroke x1,y1 x2,y2 x3,y3\nExample: /stroke 100,100 200,150 300,200');
+  try {
+    const points = args.map(a => {
+      const [x, y] = a.split(',').map(Number);
+      return { x, y };
+    });
+    await ctx.reply('🖊 Drawing stroke...');
+    await drawFreeStroke(page, points);
+    await sendPic(ctx);
+  } catch (e) { ctx.reply('❌ ' + e.message); }
+});
+
+// Set color: /color #ff0000
+bot.command('color', async (ctx) => {
+  if (!checkReady(ctx)) return;
+  const hex = ctx.message.text.split(' ')[1];
+  if (!hex) return ctx.reply('Usage: /color #hex\nExample: /color #ff0000');
+  try {
+    await ctx.reply('🎨 Setting color...');
+    await setColor(page, parseColor(hex));
+    await ctx.reply('✅ Color set to ' + parseColor(hex));
+  } catch (e) { ctx.reply('❌ ' + e.message); }
+});
+
+// Set brush size: /size 8
+bot.command('size', async (ctx) => {
+  if (!checkReady(ctx)) return;
+  const px = ctx.message.text.split(' ')[1];
+  if (!px) return ctx.reply('Usage: /size <px>\nExample: /size 8');
+  try {
+    await ctx.reply('📏 Setting size...');
+    await setBrushSize(page, Number(px));
+    await ctx.reply('✅ Brush size set to ' + px + 'px');
+  } catch (e) { ctx.reply('❌ ' + e.message); }
+});
+
+// Select brush type: /brush Marker
+bot.command('brush', async (ctx) => {
+  if (!checkReady(ctx)) return;
+  const name = ctx.message.text.split(' ').slice(1).join(' ').trim();
+  if (!name) return ctx.reply(
+    'Usage: /brush <name>\nAvailable: Marker, Pencil, Ink, Pixel Brush, Airbrush, Dry brush, Wet brush, Soft Watercolor, Quill, Dashed'
+  );
+  try {
+    await ctx.reply('🖌 Selecting brush...');
+    await selectBrushType(page, name);
+    await ctx.reply('✅ Brush set to ' + name);
+  } catch (e) { ctx.reply('❌ ' + e.message); }
+});
+
+// Fill: /fill #color x y
+bot.command('fill', async (ctx) => {
+  if (!checkReady(ctx)) return;
+  const args = ctx.message.text.split(' ').slice(1);
+  const hex = args[0] ? parseColor(args[0]) : null;
+  const x = args[1] ? Number(args[1]) : 500;
+  const y = args[2] ? Number(args[2]) : 500;
+  try {
+    if (hex) await setColor(page, hex);
+    await ctx.reply('🪣 Filling...');
+    await selectFillTool(page);
+    await sleep(300);
+    await clickCanvas(page, x, y);
+    await selectBrushTool(page);
+    await sendPic(ctx);
+  } catch (e) { ctx.reply('❌ ' + e.message); }
+});
+
+// Undo
+bot.command('undo', async (ctx) => {
+  if (!checkReady(ctx)) return;
+  try {
+    await undo(page);
+    await ctx.reply('↩️ Undone');
+  } catch (e) { ctx.reply('❌ ' + e.message); }
+});
+
+// Redo
+bot.command('redo', async (ctx) => {
+  if (!checkReady(ctx)) return;
+  try {
+    await redo(page);
+    await ctx.reply('↪️ Redone');
+  } catch (e) { ctx.reply('❌ ' + e.message); }
+});
+
+// Clear canvas
+bot.command('clear', async (ctx) => {
+  if (!checkReady(ctx)) return;
+  try {
+    await ctx.reply('🗑 Clearing canvas...');
+    await clearCanvas(page);
+    await sendPic(ctx);
+  } catch (e) { ctx.reply('❌ ' + e.message); }
+});
+
+// AI drawing: /ai draw a house
+bot.command('ai', async (ctx) => {
+  if (!checkReady(ctx)) return;
+  const description = ctx.message.text.split(' ').slice(1).join(' ').trim();
+  if (!description) return ctx.reply('Usage: /ai <description>\nExample: /ai draw a cat');
+
+  const thinking = await ctx.reply('🤖 Generating drawing plan...');
+  try {
+    const commands = await generateDrawingCommands(description);
+    await ctx.reply(`✅ Got ${commands.length} drawing commands. Executing...`);
+    await executeCommands(page, commands);
+    await sendPic(ctx);
+  } catch (e) {
+    ctx.reply('❌ AI drawing failed: ' + e.message);
+  }
+});
+
+// ── Launch ─────────────────────────────────────────────────────────────────────
+bot.launch();
+console.log('🤖 CrocoDraw Bot started!');
+
+// Keep-alive server for Railway
+const http = require('http');
+http.createServer((req, res) => res.end('CrocoDraw Bot running')).listen(process.env.PORT || 3000);
+
+// Graceful shutdown
+process.once('SIGINT', () => { bot.stop('SIGINT'); if (browser) browser.close(); });
+process.once('SIGTERM', () => { bot.stop('SIGTERM'); if (browser) browser.close(); });
