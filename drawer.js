@@ -1,28 +1,21 @@
 /**
  * drawer.js
- * Mouse simulation engine for CrocoDraw canvas control
- * Fixed: faster speeds, color via hue slider clicking
+ * CrocoDraw mouse simulation — uses exact pixel coordinates from DOM inspection
  */
 
-function sleep(ms) {
-  return new Promise(r => setTimeout(r, ms));
-}
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+function dist(a, b) { return Math.sqrt((b.x-a.x)**2 + (b.y-a.y)**2); }
 
-function dist(a, b) {
-  return Math.sqrt((b.x - a.x) ** 2 + (b.y - a.y) ** 2);
-}
-
-// Get canvas bounding box
+// ── Canvas bounds ──────────────────────────────────────────────────────────────
 async function getCanvasBounds(page) {
   return await page.evaluate(() => {
     const canvas = document.querySelector('canvas');
     if (!canvas) throw new Error('Canvas not found');
-    const rect = canvas.getBoundingClientRect();
-    return { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
+    const r = canvas.getBoundingClientRect();
+    return { x: r.left, y: r.top, width: r.width, height: r.height };
   });
 }
 
-// Convert 0-1000 coords to absolute page coords
 function toAbsolute(cx, cy, bounds) {
   return {
     x: bounds.x + (cx / 1000) * bounds.width,
@@ -30,89 +23,61 @@ function toAbsolute(cx, cy, bounds) {
   };
 }
 
-// Core stroke engine — smooth interpolated mouse drag
+// ── Core stroke ────────────────────────────────────────────────────────────────
 async function stroke(page, points, bounds) {
-  if (points.length === 0) return;
+  if (!points.length) return;
   const first = toAbsolute(points[0].x, points[0].y, bounds);
   await page.mouse.move(first.x, first.y);
   await page.mouse.down();
   await sleep(10);
-
   for (let i = 1; i < points.length; i++) {
-    const prev = toAbsolute(points[i - 1].x, points[i - 1].y, bounds);
+    const prev = toAbsolute(points[i-1].x, points[i-1].y, bounds);
     const curr = toAbsolute(points[i].x, points[i].y, bounds);
-    const steps = Math.max(8, Math.round(dist(prev, curr) / 4));
+    const steps = Math.max(6, Math.round(dist(prev, curr) / 4));
     for (let s = 1; s <= steps; s++) {
       const t = s / steps;
-      await page.mouse.move(
-        prev.x + (curr.x - prev.x) * t,
-        prev.y + (curr.y - prev.y) * t
-      );
+      await page.mouse.move(prev.x + (curr.x - prev.x) * t, prev.y + (curr.y - prev.y) * t);
       await sleep(2);
     }
   }
-
   await page.mouse.up();
   await sleep(20);
 }
 
-// Draw straight line
+// ── Draw commands ──────────────────────────────────────────────────────────────
 async function drawLine(page, x1, y1, x2, y2) {
   const bounds = await getCanvasBounds(page);
-  const steps = 30;
   const points = [];
-  for (let i = 0; i <= steps; i++) {
-    points.push({
-      x: x1 + ((x2 - x1) * i) / steps,
-      y: y1 + ((y2 - y1) * i) / steps,
-    });
-  }
+  for (let i = 0; i <= 30; i++) points.push({ x: x1+((x2-x1)*i/30), y: y1+((y2-y1)*i/30) });
   await stroke(page, points, bounds);
 }
 
-// Draw circle
 async function drawCircle(page, cx, cy, r) {
   const bounds = await getCanvasBounds(page);
-  const steps = 80;
   const points = [];
-  for (let i = 0; i <= steps; i++) {
-    const angle = (i / steps) * Math.PI * 2;
-    points.push({
-      x: cx + Math.cos(angle) * r,
-      y: cy + Math.sin(angle) * r,
-    });
+  for (let i = 0; i <= 60; i++) {
+    const a = (i/60)*Math.PI*2;
+    points.push({ x: cx+Math.cos(a)*r, y: cy+Math.sin(a)*r });
   }
   await stroke(page, points, bounds);
 }
 
-// Draw rectangle
 async function drawRect(page, x1, y1, x2, y2) {
   const bounds = await getCanvasBounds(page);
-  const sides = [
-    [{ x: x1, y: y1 }, { x: x2, y: y1 }],
-    [{ x: x2, y: y1 }, { x: x2, y: y2 }],
-    [{ x: x2, y: y2 }, { x: x1, y: y2 }],
-    [{ x: x1, y: y2 }, { x: x1, y: y1 }],
-  ];
-  for (const [a, b] of sides) {
-    const points = [];
-    for (let i = 0; i <= 20; i++) {
-      points.push({
-        x: a.x + ((b.x - a.x) * i) / 20,
-        y: a.y + ((b.y - a.y) * i) / 20,
-      });
-    }
-    await stroke(page, points, bounds);
+  const corners = [{x:x1,y:y1},{x:x2,y:y1},{x:x2,y:y2},{x:x1,y:y2},{x:x1,y:y1}];
+  const points = [];
+  for (let i = 0; i < corners.length-1; i++) {
+    const a = corners[i], b = corners[i+1];
+    for (let s = 0; s <= 20; s++) points.push({ x: a.x+((b.x-a.x)*s/20), y: a.y+((b.y-a.y)*s/20) });
   }
+  await stroke(page, points, bounds);
 }
 
-// Free multi-point stroke
 async function drawFreeStroke(page, points) {
   const bounds = await getCanvasBounds(page);
   await stroke(page, points, bounds);
 }
 
-// Click canvas position (for fill tool)
 async function clickCanvas(page, x, y) {
   const bounds = await getCanvasBounds(page);
   const abs = toAbsolute(x, y, bounds);
@@ -120,207 +85,212 @@ async function clickCanvas(page, x, y) {
   await sleep(50);
 }
 
-// ── Tool button helpers ────────────────────────────────────────────────────────
+// ── Toolbar buttons — EXACT pixel coords from DOM debug ───────────────────────
+// Row 1 (tools) y=709:  brush=517  eraser=579  fill=640  eyedropper=702  color=763
+// Row 2 (actions) y=774: undo=517  redo=579  clear=640  layers=701  transform=762
 
-// Get all toolbar buttons split into rows
-async function getToolbarRows(page) {
-  return await page.evaluate(() => {
-    const allBtns = Array.from(document.querySelectorAll('button'));
-    const toolBtns = allBtns.filter(b => {
-      const rect = b.getBoundingClientRect();
-      return rect.width > 30 && rect.width < 120 && rect.height > 30 && rect.height < 120;
-    });
-    const sorted = toolBtns.sort((a, b) => {
-      const ay = a.getBoundingClientRect().y;
-      const by = b.getBoundingClientRect().y;
-      return ay !== by ? ay - by : a.getBoundingClientRect().x - b.getBoundingClientRect().x;
-    });
-    const rows = [];
-    let lastY = -999;
-    for (const btn of sorted) {
-      const y = Math.round(btn.getBoundingClientRect().y);
-      if (Math.abs(y - lastY) > 15) { rows.push([]); lastY = y; }
-      rows[rows.length - 1].push({
-        x: btn.getBoundingClientRect().x + btn.getBoundingClientRect().width / 2,
-        y: btn.getBoundingClientRect().y + btn.getBoundingClientRect().height / 2,
-      });
-    }
-    return rows;
-  });
+const TOOLBAR = {
+  brush:       { x: 517, y: 709 },
+  eraser:      { x: 579, y: 709 },
+  fill:        { x: 640, y: 709 },
+  eyedropper:  { x: 702, y: 709 },
+  colorball:   { x: 763, y: 709 },
+  undo:        { x: 517, y: 774 },
+  redo:        { x: 579, y: 774 },
+  clear:       { x: 640, y: 774 },
+  layers:      { x: 701, y: 774 },
+  transform:   { x: 762, y: 774 },
+};
+
+async function clickTool(page, name) {
+  const t = TOOLBAR[name];
+  if (!t) throw new Error('Unknown tool: ' + name);
+  await page.mouse.click(t.x, t.y);
+  await sleep(250);
 }
 
-async function clickToolbarButton(page, row, index) {
-  const rows = await getToolbarRows(page);
-  if (!rows[row] || !rows[row][index]) {
-    console.warn(`Toolbar button [${row}][${index}] not found`);
-    return;
-  }
-  const btn = rows[row][index];
-  await page.mouse.click(btn.x, btn.y);
-  await sleep(200);
-}
+async function selectBrushTool(page) { await clickTool(page, 'brush'); }
+async function selectFillTool(page)  { await clickTool(page, 'fill'); }
 
-async function selectBrushTool(page) { await clickToolbarButton(page, 0, 0); }
-async function selectFillTool(page) { await clickToolbarButton(page, 0, 1); }
-async function undo(page) { await clickToolbarButton(page, 1, 0); }
-async function redo(page) { await clickToolbarButton(page, 1, 1); }
+async function undo(page) { await clickTool(page, 'undo'); }
+async function redo(page) { await clickTool(page, 'redo'); }
 
 async function clearCanvas(page) {
-  await clickToolbarButton(page, 1, 2);
-  await sleep(200);
+  await clickTool(page, 'clear');
+  await sleep(300);
+  // Confirm dialog if appears
   await page.evaluate(() => {
-    const btns = Array.from(document.querySelectorAll('button'));
-    const confirm = btns.find(b => /confirm|yes|ok|clear/i.test(b.textContent));
+    const all = Array.from(document.querySelectorAll('.circle-switch, [class*="confirm"], [class*="ok"]'));
+    const confirm = all.find(el => /yes|ok|confirm|clear/i.test(el.textContent));
     if (confirm) confirm.click();
   });
   await sleep(200);
 }
 
-// ── Color setting via hue slider ───────────────────────────────────────────────
-
-// Convert hex to HSV
+// ── Color picker ───────────────────────────────────────────────────────────────
 function hexToHsv(hex) {
-  let r = parseInt(hex.slice(1, 3), 16) / 255;
-  let g = parseInt(hex.slice(3, 5), 16) / 255;
-  let b = parseInt(hex.slice(5, 7), 16) / 255;
-  const max = Math.max(r, g, b), min = Math.min(r, g, b);
-  const d = max - min;
-  let h = 0, s = max === 0 ? 0 : d / max, v = max;
+  if (hex.startsWith('#')) hex = hex.slice(1);
+  if (hex.length === 3) hex = hex.split('').map(c=>c+c).join('');
+  let r = parseInt(hex.slice(0,2),16)/255;
+  let g = parseInt(hex.slice(2,4),16)/255;
+  let b = parseInt(hex.slice(4,6),16)/255;
+  const max = Math.max(r,g,b), min = Math.min(r,g,b), d = max-min;
+  let h = 0, s = max===0 ? 0 : d/max, v = max;
   if (max !== min) {
-    switch (max) {
-      case r: h = ((g - b) / d + (g < b ? 6 : 0)) / 6; break;
-      case g: h = ((b - r) / d + 2) / 6; break;
-      case b: h = ((r - g) / d + 4) / 6; break;
+    switch(max) {
+      case r: h=((g-b)/d+(g<b?6:0))/6; break;
+      case g: h=((b-r)/d+2)/6; break;
+      case b: h=((r-g)/d+4)/6; break;
     }
   }
   return { h, s, v };
 }
 
 async function setColor(page, hex) {
-  // Normalize hex
   if (!hex.startsWith('#')) hex = '#' + hex;
-  if (hex.length === 4) {
-    hex = '#' + hex[1] + hex[1] + hex[2] + hex[2] + hex[3] + hex[3];
-  }
 
-  // Click color ball button (5th tool, index 4)
-  await clickToolbarButton(page, 0, 4);
-  await sleep(400);
+  // Open color picker
+  await clickTool(page, 'colorball');
+  await sleep(500);
 
   const hsv = hexToHsv(hex);
 
-  // Get color picker elements positions
+  // Get color picker bounds
   const picker = await page.evaluate(() => {
-    // Find hue slider (rainbow bar)
-    const inputs = Array.from(document.querySelectorAll('input[type="range"]'));
-    const allEls = Array.from(document.querySelectorAll('*'));
+    const all = Array.from(document.querySelectorAll('*'));
 
-    // Find the gradient/saturation box
-    const gradBox = allEls.find(el => {
+    // Gradient saturation box — large square with gradient
+    const gradBox = all.find(el => {
+      const r = el.getBoundingClientRect();
       const s = window.getComputedStyle(el);
-      const bg = s.backgroundImage || '';
-      return bg.includes('gradient') && bg.includes('white') && el.getBoundingClientRect().width > 100;
+      return r.width > 80 && r.height > 80 && r.width < 400 &&
+             (s.backgroundImage||'').includes('gradient') &&
+             r.y > 400;
     });
 
-    // Find hue slider
-    const hueSlider = inputs.find(i => {
-      const s = window.getComputedStyle(i);
-      const bg = s.backgroundImage || s.background || '';
-      return bg.includes('hsl') || bg.includes('rainbow') || bg.includes('gradient');
-    }) || inputs[0];
+    // Hue slider — wide thin element (rainbow)
+    const hueEl = all.find(el => {
+      const r = el.getBoundingClientRect();
+      const s = window.getComputedStyle(el);
+      return r.width > 100 && r.height > 5 && r.height < 30 &&
+             (s.backgroundImage||'').includes('hsl') &&
+             r.y > 400;
+    });
 
-    // Find hex display element
-    const hexEl = allEls.find(el =>
-      el.children.length === 0 &&
-      /^#[0-9a-fA-F]{6}$/i.test(el.textContent.trim())
-    );
+    // Opacity slider
+    const opEl = all.find(el => {
+      const r = el.getBoundingClientRect();
+      const s = window.getComputedStyle(el);
+      return r.width > 100 && r.height > 5 && r.height < 30 &&
+             (s.backgroundImage||'').includes('rgba') &&
+             r.y > 400;
+    });
 
     return {
-      gradBox: gradBox ? {
-        x: gradBox.getBoundingClientRect().left,
-        y: gradBox.getBoundingClientRect().top,
-        w: gradBox.getBoundingClientRect().width,
-        h: gradBox.getBoundingClientRect().height,
-      } : null,
-      hueSlider: hueSlider ? {
-        x: hueSlider.getBoundingClientRect().left,
-        y: hueSlider.getBoundingClientRect().top,
-        w: hueSlider.getBoundingClientRect().width,
-        h: hueSlider.getBoundingClientRect().height,
-      } : null,
+      grad: gradBox ? { x: gradBox.getBoundingClientRect().left, y: gradBox.getBoundingClientRect().top, w: gradBox.getBoundingClientRect().width, h: gradBox.getBoundingClientRect().height } : null,
+      hue:  hueEl  ? { x: hueEl.getBoundingClientRect().left,  y: hueEl.getBoundingClientRect().top,  w: hueEl.getBoundingClientRect().width,  h: hueEl.getBoundingClientRect().height  } : null,
+      op:   opEl   ? { x: opEl.getBoundingClientRect().left,   y: opEl.getBoundingClientRect().top,   w: opEl.getBoundingClientRect().width,   h: opEl.getBoundingClientRect().height   } : null,
     };
   });
 
-  if (picker.hueSlider) {
-    // Click on hue slider at correct hue position
-    const hueX = picker.hueSlider.x + hsv.h * picker.hueSlider.w;
-    const hueY = picker.hueSlider.y + picker.hueSlider.h / 2;
-    await page.mouse.click(hueX, hueY);
+  // Click hue slider
+  if (picker.hue) {
+    await page.mouse.click(
+      picker.hue.x + hsv.h * picker.hue.w,
+      picker.hue.y + picker.hue.h / 2
+    );
     await sleep(150);
   }
 
-  if (picker.gradBox) {
-    // Click on saturation/brightness box
-    const sx = picker.gradBox.x + hsv.s * picker.gradBox.w;
-    const sy = picker.gradBox.y + (1 - hsv.v) * picker.gradBox.h;
-    await page.mouse.click(sx, sy);
+  // Click saturation/brightness box
+  if (picker.grad) {
+    await page.mouse.click(
+      picker.grad.x + hsv.s * picker.grad.w,
+      picker.grad.y + (1 - hsv.v) * picker.grad.h
+    );
     await sleep(150);
   }
 
-  // Close color picker
+  // Set opacity to 100% if opacity slider exists
+  if (picker.op) {
+    await page.mouse.click(picker.op.x + picker.op.w, picker.op.y + picker.op.h / 2);
+    await sleep(100);
+  }
+
+  // Close picker by clicking outside / pressing Escape
   await page.keyboard.press('Escape');
   await sleep(150);
 }
 
-// Set brush size
+// ── Brush size ─────────────────────────────────────────────────────────────────
+// brush-info div is at x=782,y=749 — click it to open size control
 async function setBrushSize(page, size) {
-  // Try clicking size display text and using keyboard
-  await page.evaluate((s) => {
-    const allEls = Array.from(document.querySelectorAll('*'));
-    const sizeEl = allEls.find(el =>
-      el.children.length === 0 && /^\d+px$/.test(el.textContent.trim())
-    );
-    if (sizeEl) sizeEl.click();
-  }, size);
-  await sleep(300);
+  // Click the brush-info element
+  await page.evaluate(() => {
+    const el = document.querySelector('.brush-info');
+    if (el) el.click();
+  });
+  await sleep(400);
 
-  // Try range input
-  const changed = await page.evaluate((s) => {
+  // Find any slider that appeared and set it
+  await page.evaluate((s) => {
     const inputs = Array.from(document.querySelectorAll('input[type="range"]'));
-    if (inputs.length === 0) return false;
+    if (!inputs.length) return;
     const input = inputs[0];
     const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
     setter.call(input, String(s));
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
-    return true;
   }, size);
 
-  await sleep(100);
+  await sleep(150);
+
+  // Try clicking a visible size option or dragging slider
+  const sliderPos = await page.evaluate((targetSize) => {
+    const all = Array.from(document.querySelectorAll('*'));
+    // Look for a slider track
+    const slider = all.find(el => {
+      const r = el.getBoundingClientRect();
+      return r.width > 80 && r.height < 20 && r.height > 3 && r.y > 600;
+    });
+    if (!slider) return null;
+    const r = slider.getBoundingClientRect();
+    // Map size 1-100 to slider position
+    const ratio = Math.min(targetSize / 100, 1);
+    return { x: r.x + ratio * r.width, y: r.y + r.height/2 };
+  }, size);
+
+  if (sliderPos) {
+    await page.mouse.click(sliderPos.x, sliderPos.y);
+    await sleep(150);
+  }
+
   await page.keyboard.press('Escape');
   await sleep(100);
 }
 
-// Select brush type from list
+// ── Brush type selection ───────────────────────────────────────────────────────
 async function selectBrushType(page, brushName) {
-  await selectBrushTool(page);
-  await sleep(200);
+  // Click brush tool to open brush list
+  await clickTool(page, 'brush');
+  await sleep(300);
 
   const found = await page.evaluate((name) => {
     const all = Array.from(document.querySelectorAll('*'));
     const match = all.find(el =>
-      el.children.length === 0 &&
-      el.textContent.trim().toLowerCase() === name.toLowerCase()
+      el.children.length <= 1 &&
+      el.textContent.trim().toLowerCase() === name.toLowerCase() &&
+      el.getBoundingClientRect().width > 50
     );
     if (match) { match.click(); return true; }
     return false;
   }, brushName);
 
-  if (!found) console.warn('Brush not found:', brushName);
+  if (!found) console.warn('⚠️ Brush not found:', brushName);
   await sleep(200);
 }
 
-// Screenshot canvas only
+// ── Screenshot ─────────────────────────────────────────────────────────────────
 async function screenshotCanvas(page) {
   const canvas = await page.$('canvas');
   if (!canvas) throw new Error('Canvas not found');
@@ -328,20 +298,8 @@ async function screenshotCanvas(page) {
 }
 
 module.exports = {
-  drawLine,
-  drawCircle,
-  drawRect,
-  drawFreeStroke,
-  clickCanvas,
-  selectBrushTool,
-  selectFillTool,
-  selectBrushType,
-  setColor,
-  setBrushSize,
-  undo,
-  redo,
-  clearCanvas,
-  screenshotCanvas,
-  getCanvasBounds,
-  sleep,
+  drawLine, drawCircle, drawRect, drawFreeStroke, clickCanvas,
+  selectBrushTool, selectFillTool, selectBrushType,
+  setColor, setBrushSize, undo, redo, clearCanvas,
+  screenshotCanvas, getCanvasBounds, sleep,
 };
