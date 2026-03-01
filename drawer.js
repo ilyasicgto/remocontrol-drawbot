@@ -191,14 +191,9 @@ async function setColor(page, hex) {
   await page.keyboard.press('Enter');
   await sleep(200);
 
-  // Close picker by clicking canvas
-  const bounds = await getCanvasBounds(page);
-  await page.mouse.click(bounds.x + bounds.width / 2, bounds.y + 30);
-  await sleep(300);
-
-  // Re-select brush so color is applied
-  await clickTool(page, 'brush');
-  await sleep(200);
+  // Close picker by clicking brush tool button (outside picker, won't cause stroke)
+  await page.mouse.click(TOOLBAR.brush.x, TOOLBAR.brush.y);
+  await sleep(400);
 }
 
 // ── Brush size ─────────────────────────────────────────────────────────────────
@@ -220,19 +215,18 @@ async function setBrushSize(page, targetSize) {
   const diff = size - currentSize;
   if (diff === 0) return;
 
-  // Click canvas center so keyboard events reach the app
-  const bounds = await getCanvasBounds(page);
-  await page.mouse.click(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
-  await sleep(150);
+  // Click the brush tool button to focus the app (NOT canvas - avoids accidental stroke)
+  await page.mouse.click(TOOLBAR.brush.x, TOOLBAR.brush.y);
+  await sleep(300);
 
   // Z = +1px per press, X = -1px per press
   const key = diff > 0 ? 'z' : 'x';
   const presses = Math.abs(diff);
   for (let i = 0; i < presses; i++) {
     await page.keyboard.press(key);
-    await sleep(20);
+    await sleep(25);
   }
-  await sleep(100);
+  await sleep(200);
 }
 
 // ── Brush type selection ───────────────────────────────────────────────────────
