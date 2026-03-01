@@ -37,7 +37,7 @@ async function generateDrawingCommands(description) {
       'Authorization': `Bearer ${GROQ_API_KEY}`,
     },
     body: JSON.stringify({
-      model: 'llama3-8b-8192',
+      model: 'llama-3.3-70b-versatile',
       max_tokens: 2000,
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
