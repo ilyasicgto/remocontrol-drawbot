@@ -31,23 +31,25 @@ async function stroke(page, points, bounds) {
   if (!points.length) return;
   const first = toAbsolute(points[0].x, points[0].y, bounds);
   await page.mouse.move(first.x, first.y);
+  await sleep(30);
   await page.mouse.down();
-  await sleep(10);
+  await sleep(30);
   for (let i = 1; i < points.length; i++) {
     const prev = toAbsolute(points[i - 1].x, points[i - 1].y, bounds);
     const curr = toAbsolute(points[i].x, points[i].y, bounds);
-    const steps = Math.max(6, Math.round(dist(prev, curr) / 4));
+    // More steps, slower movement so CrocoDraw registers every point
+    const steps = Math.max(10, Math.round(dist(prev, curr) / 2));
     for (let s = 1; s <= steps; s++) {
       const t = s / steps;
       await page.mouse.move(
         prev.x + (curr.x - prev.x) * t,
         prev.y + (curr.y - prev.y) * t
       );
-      await sleep(2);
+      await sleep(8);
     }
   }
   await page.mouse.up();
-  await sleep(20);
+  await sleep(50);
 }
 
 // ── Draw helpers ───────────────────────────────────────────────────────────────
