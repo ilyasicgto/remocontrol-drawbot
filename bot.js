@@ -3,6 +3,7 @@ const puppeteer = require('puppeteer');
 const sharp = require('sharp');
 const WebSocket = require('ws');
 const http = require('http');
+const https = require('https');
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 if (!BOT_TOKEN) { console.log('❌ BOT_TOKEN missing!'); process.exit(1); }
@@ -37,6 +38,73 @@ function broadcast(data) {
     if (ws.readyState === WebSocket.OPEN) ws.send(payload);
 }
 
+// ─── Gemini API call (text or image) ─────────────────────────────────────────
+async function callGemini(prompt, imageBase64 = null, mimeType = 'image/jpeg') {
+  const { GoogleGenerativeAI } = require('@google/generative-ai');
+  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+  const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+
+  const systemPrompt = `You are a drawing bot controller. Output ONLY a JSON array of drawing commands.
+Types:
+- {"type":"draw_direct","x1":n,"y1":n,"x2":n,"y2":n,"color":"#hex","width":n}
+- {"type":"circle","x":n,"y":n,"r":n,"color":"#hex","fill":bool,"width":n}
+- {"type":"path","points":[[x,y],...],"color":"#hex","width":n}
+Canvas is 1016x1200. Use many short path segments for curves and complex shapes.
+For images: trace the main outlines and important features only.
+Output ONLY valid JSON array, no markdown, no explanation.`;
+
+  const parts = imageBase64
+    ? [
+        { text: systemPrompt + '\n\n' + prompt },
+        { inlineData: { mimeType, data: imageBase64 } }
+      ]
+    : [{ text: systemPrompt + '\n\n' + prompt }];
+
+  const result = await model.generateContent(parts);
+  const text = result.response.text().trim().replace(/```json|```/g, '');
+  return JSON.parse(text);
+}
+
+// ─── Download Telegram file as base64 ────────────────────────────────────────
+async function getTelegramFileBase64(ctx, fileId) {
+  const file = await ctx.telegram.getFile(fileId);
+  const url = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`;
+  return new Promise((resolve, reject) => {
+    https.get(url, (res) => {
+      const chunks = [];
+      res.on('data', chunk => chunks.push(chunk));
+      res.on('end', () => resolve(Buffer.concat(chunks).toString('base64')));
+      res.on('error', reject);
+    });
+  });
+}
+
+// ─── Execute drawing commands on canvas ──────────────────────────────────────
+async function executeCommands(commands) {
+  await page.evaluate((cmds) => {
+    const canvas = document.querySelector('.main-canvas');
+    const ctx = canvas.getContext('2d');
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    for (const cmd of cmds) {
+      if (cmd.type === 'draw_direct') {
+        ctx.strokeStyle = cmd.color || '#000'; ctx.lineWidth = cmd.width || 2;
+        ctx.beginPath(); ctx.moveTo(cmd.x1, cmd.y1); ctx.lineTo(cmd.x2, cmd.y2); ctx.stroke();
+      } else if (cmd.type === 'circle') {
+        ctx.strokeStyle = cmd.color || '#000'; ctx.fillStyle = cmd.color || '#000';
+        ctx.lineWidth = cmd.width || 2;
+        ctx.beginPath(); ctx.arc(cmd.x, cmd.y, cmd.r, 0, Math.PI * 2);
+        if (cmd.fill) ctx.fill(); else ctx.stroke();
+      } else if (cmd.type === 'path' && cmd.points?.length) {
+        ctx.strokeStyle = cmd.color || '#000'; ctx.lineWidth = cmd.width || 2;
+        ctx.beginPath(); ctx.moveTo(cmd.points[0][0], cmd.points[0][1]);
+        for (let i = 1; i < cmd.points.length; i++) ctx.lineTo(cmd.points[i][0], cmd.points[i][1]);
+        ctx.stroke();
+      }
+    }
+  }, commands);
+  canvasDirty = true;
+}
+
 // ─── Core draw handler ────────────────────────────────────────────────────────
 async function handleDrawCommand(cmd) {
   if (!isReady) throw new Error('No host attached');
@@ -45,47 +113,33 @@ async function handleDrawCommand(cmd) {
 
     case 'draw_direct': {
       await page.evaluate((c) => {
-        const canvas = document.querySelector('.main-canvas');
-        const ctx = canvas.getContext('2d');
-        ctx.strokeStyle = c.color || '#000';
-        ctx.lineWidth = c.width || 2;
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-        ctx.beginPath();
-        ctx.moveTo(+c.x1, +c.y1);
-        ctx.lineTo(+c.x2, +c.y2);
-        ctx.stroke();
-      }, cmd);
-      break;
+        const ctx = document.querySelector('.main-canvas').getContext('2d');
+        ctx.strokeStyle = c.color || '#000'; ctx.lineWidth = +c.width || 2;
+        ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+        ctx.beginPath(); ctx.moveTo(+c.x1, +c.y1); ctx.lineTo(+c.x2, +c.y2); ctx.stroke();
+      }, cmd); break;
     }
 
     case 'circle': {
       await page.evaluate((c) => {
         const ctx = document.querySelector('.main-canvas').getContext('2d');
-        ctx.strokeStyle = c.color || '#000';
-        ctx.fillStyle = c.color || '#000';
+        ctx.strokeStyle = c.color || '#000'; ctx.fillStyle = c.color || '#000';
         ctx.lineWidth = +c.width || 2;
-        ctx.beginPath();
-        ctx.arc(+c.x, +c.y, +c.r, 0, Math.PI * 2);
+        ctx.beginPath(); ctx.arc(+c.x, +c.y, +c.r, 0, Math.PI * 2);
         if (c.fill === true || c.fill === 'true') ctx.fill(); else ctx.stroke();
-      }, cmd);
-      break;
+      }, cmd); break;
     }
 
     case 'path': {
       await page.evaluate((c) => {
         if (!c.points?.length) return;
         const ctx = document.querySelector('.main-canvas').getContext('2d');
-        ctx.strokeStyle = c.color || '#000';
-        ctx.lineWidth = +c.width || 2;
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-        ctx.beginPath();
-        ctx.moveTo(c.points[0][0], c.points[0][1]);
+        ctx.strokeStyle = c.color || '#000'; ctx.lineWidth = +c.width || 2;
+        ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+        ctx.beginPath(); ctx.moveTo(c.points[0][0], c.points[0][1]);
         for (let i = 1; i < c.points.length; i++) ctx.lineTo(c.points[i][0], c.points[i][1]);
         ctx.stroke();
-      }, cmd);
-      break;
+      }, cmd); break;
     }
 
     case 'clear': {
@@ -99,8 +153,7 @@ async function handleDrawCommand(cmd) {
             ctx.fillRect(0, 0, c.width, c.height);
           }
         });
-      });
-      break;
+      }); break;
     }
 
     case 'undo': {
@@ -127,20 +180,12 @@ async function handleDrawCommand(cmd) {
           +cmd.y1 + ((+cmd.y2 - +cmd.y1) * i / steps)
         );
       }
-      await page.mouse.up();
-      break;
+      await page.mouse.up(); break;
     }
 
-    case 'click':
-      await page.mouse.click(+cmd.x, +cmd.y);
-      break;
-
-    case 'eval':
-      await page.evaluate(new Function(cmd.code));
-      break;
-
-    default:
-      throw new Error(`Unknown command: ${cmd.type}`);
+    case 'click': await page.mouse.click(+cmd.x, +cmd.y); break;
+    case 'eval':  await page.evaluate(new Function(cmd.code)); break;
+    default: throw new Error(`Unknown command: ${cmd.type}`);
   }
 
   canvasDirty = true;
@@ -150,26 +195,21 @@ async function handleDrawCommand(cmd) {
 // ─── Screenshot ───────────────────────────────────────────────────────────────
 async function getScreenshot(forceRefresh = false) {
   if (!canvasDirty && screenshotCache && !forceRefresh) return screenshotCache;
-
-  // Screenshot only the main canvas element with white background
-  const png = await page.evaluate(async () => {
+  const png = await page.evaluate(() => {
     const canvas = document.querySelector('.main-canvas');
-    const offscreen = document.createElement('canvas');
-    offscreen.width = canvas.width;
-    offscreen.height = canvas.height;
-    const ctx = offscreen.getContext('2d');
+    const off = document.createElement('canvas');
+    off.width = canvas.width; off.height = canvas.height;
+    const ctx = off.getContext('2d');
     ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, offscreen.width, offscreen.height);
+    ctx.fillRect(0, 0, off.width, off.height);
     ctx.drawImage(canvas, 0, 0);
-    return offscreen.toDataURL('image/png').split(',')[1];
+    return off.toDataURL('image/png').split(',')[1];
   });
-
   const buf = Buffer.from(png, 'base64');
   screenshotCache = await sharp(buf)
     .resize({ width: 800, withoutEnlargement: true })
     .jpeg({ quality: 75, mozjpeg: true })
     .toBuffer();
-
   canvasDirty = false;
   return screenshotCache;
 }
@@ -186,8 +226,6 @@ async function initBrowser(url) {
     await page.setViewport({ width: 1280, height: 800 });
     await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
     await new Promise(r => setTimeout(r, 5000));
-
-    // Set white background on main canvas
     await page.evaluate(() => {
       const canvas = document.querySelector('.main-canvas');
       if (canvas) {
@@ -196,9 +234,7 @@ async function initBrowser(url) {
         ctx.fillRect(0, 0, canvas.width, canvas.height);
       }
     });
-
-    isReady = true;
-    canvasDirty = true;
+    isReady = true; canvasDirty = true;
     console.log('✅ Browser ready!');
     return true;
   } catch(e) {
@@ -207,59 +243,14 @@ async function initBrowser(url) {
   }
 }
 
-// ─── AI Draw ──────────────────────────────────────────────────────────────────
-async function runAIDraw(ctx, prompt) {
-const Groq = require('groq-sdk');
-const ai = new Groq({ apiKey: process.env.GROQ_API_KEY });
-const res = await ai.chat.completions.create({
-  model: 'llama-3.3-70b-versatile',
-  max_tokens: 4000,
-  messages: [
-    { role: 'system', content: `You are a drawing bot controller. Output ONLY a JSON array of drawing commands.
-Types:
-- {"type":"draw_direct","x1":n,"y1":n,"x2":n,"y2":n,"color":"#hex","width":n}
-- {"type":"circle","x":n,"y":n,"r":n,"color":"#hex","fill":bool,"width":n}
-- {"type":"path","points":[[x,y],...],"color":"#hex","width":n}
-Canvas is 1016x1200. Output ONLY valid JSON array, no markdown.` },
-    { role: 'user', content: prompt }
-  ]
-});
-let commands;
-try {
-  commands = JSON.parse(res.choices[0].message.content.trim().replace(/```json|```/g, ''));
-  } catch { return ctx.reply('❌ Failed to parse AI response'); }
-  await ctx.reply(`✅ Got ${commands.length} commands, drawing now...`);
-  await page.evaluate((cmds) => {
-    const canvas = document.querySelector('.main-canvas');
-    const ctx = canvas.getContext('2d');
-    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-    for (const cmd of cmds) {
-      if (cmd.type === 'draw_direct') {
-        ctx.strokeStyle = cmd.color || '#000'; ctx.lineWidth = cmd.width || 2;
-        ctx.beginPath(); ctx.moveTo(cmd.x1, cmd.y1); ctx.lineTo(cmd.x2, cmd.y2); ctx.stroke();
-      } else if (cmd.type === 'circle') {
-        ctx.strokeStyle = cmd.color || '#000'; ctx.fillStyle = cmd.color || '#000';
-        ctx.lineWidth = cmd.width || 2;
-        ctx.beginPath(); ctx.arc(cmd.x, cmd.y, cmd.r, 0, Math.PI * 2);
-        if (cmd.fill) ctx.fill(); else ctx.stroke();
-      } else if (cmd.type === 'path' && cmd.points?.length) {
-        ctx.strokeStyle = cmd.color || '#000'; ctx.lineWidth = cmd.width || 2;
-        ctx.beginPath(); ctx.moveTo(cmd.points[0][0], cmd.points[0][1]);
-        for (let i = 1; i < cmd.points.length; i++) ctx.lineTo(cmd.points[i][0], cmd.points[i][1]);
-        ctx.stroke();
-      }
-    }
-  }, commands);
-  canvasDirty = true;
-  await ctx.replyWithPhoto({ source: await getScreenshot(true) }, { caption: '🖼 Done!' });
-}
-
 // ─── Telegram Commands ────────────────────────────────────────────────────────
 bot.command('start', (ctx) => ctx.reply(
   '🦠 *Parasite Bot*\n\n📎 Send URL to attach\n\n' +
   '*Commands:*\n`/line x1 y1 x2 y2 [#color] [width]`\n' +
   '`/circle x y r [#color] [fill]`\n`/undo` `/redo` `/clear`\n' +
-  '`/ai [prompt]`\n`/pic`\n`/debug`',
+  '`/ai [prompt]` — text to drawing\n' +
+  '📸 *Send a photo* — bot will redraw it!\n' +
+  '`/pic`\n`/debug`',
   { parse_mode: 'Markdown' }
 ));
 
@@ -292,10 +283,8 @@ bot.command('redo', async (ctx) => {
 });
 
 bot.command('clear', async (ctx) => {
-  try {
-    await handleDrawCommand({ type:'clear' });
-    ctx.reply('🗑 Cleared');
-  } catch(e) { ctx.reply('❌ '+e.message); }
+  try { await handleDrawCommand({ type:'clear' }); ctx.reply('🗑 Cleared'); }
+  catch(e) { ctx.reply('❌ '+e.message); }
 });
 
 bot.command('pic', async (ctx) => {
@@ -306,10 +295,16 @@ bot.command('pic', async (ctx) => {
 
 bot.command('ai', async (ctx) => {
   if (!isReady) return ctx.reply('❌ No host attached');
+  if (!process.env.GEMINI_API_KEY) return ctx.reply('❌ GEMINI_API_KEY missing');
   const prompt = ctx.message.text.replace('/ai', '').trim();
   if (!prompt) return ctx.reply('Usage: /ai draw a cat');
-  if (!process.env.GROQ_API_KEY) return ctx.reply('❌ GROQ_API_KEY missing');
-  try { await runAIDraw(ctx, prompt); } catch(e) { ctx.reply('❌ '+e.message); }
+  try {
+    await ctx.reply('🤖 Generating drawing plan...');
+    const commands = await callGemini(prompt);
+    await ctx.reply(`✅ Got ${commands.length} commands, drawing now...`);
+    await executeCommands(commands);
+    await ctx.replyWithPhoto({ source: await getScreenshot(true) }, { caption: '🖼 Done!' });
+  } catch(e) { ctx.reply('❌ '+e.message); }
 });
 
 bot.command('debug', async (ctx) => {
@@ -324,16 +319,28 @@ bot.command('debug', async (ctx) => {
           index: i, class: c.className, width: c.width, height: c.height
         })),
         buttons: Array.from(buttons).map(b => ({
-          text: b.innerText.trim(),
-          title: b.title,
-          aria: b.getAttribute('aria-label')
+          text: b.innerText.trim(), title: b.title, aria: b.getAttribute('aria-label')
         })).filter(b => b.text || b.title || b.aria),
-        inputs: Array.from(inputs).map(i => ({
-          type: i.type, class: i.className, value: i.value
-        }))
+        inputs: Array.from(inputs).map(i => ({ type: i.type, class: i.className, value: i.value }))
       };
     });
     ctx.reply('🔍 Debug:\n' + JSON.stringify(info, null, 2).slice(0, 3500));
+  } catch(e) { ctx.reply('❌ '+e.message); }
+});
+
+// ─── Photo handler — send image → redraw on canvas ────────────────────────────
+bot.on('photo', async (ctx) => {
+  if (!isReady) return ctx.reply('❌ No host attached first');
+  if (!process.env.GEMINI_API_KEY) return ctx.reply('❌ GEMINI_API_KEY missing');
+  try {
+    await ctx.reply('📸 Analyzing image...');
+    const fileId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
+    const base64 = await getTelegramFileBase64(ctx, fileId);
+    const caption = ctx.message.caption || 'Redraw this image as line art on the canvas. Trace all main outlines and details.';
+    const commands = await callGemini(caption, base64, 'image/jpeg');
+    await ctx.reply(`✅ Got ${commands.length} commands, drawing now...`);
+    await executeCommands(commands);
+    await ctx.replyWithPhoto({ source: await getScreenshot(true) }, { caption: '🖼 Done!' });
   } catch(e) { ctx.reply('❌ '+e.message); }
 });
 
@@ -344,7 +351,7 @@ bot.on('text', async (ctx) => {
   if (t.startsWith('http')) {
     await ctx.reply('⏳ Attaching...');
     const ok = await initBrowser(t);
-    return ctx.reply(ok ? '✅ Attached! Use /pic' : '❌ Failed.');
+    return ctx.reply(ok ? '✅ Attached! Use /pic or send a photo 📸' : '❌ Failed.');
   }
 });
 
@@ -359,4 +366,3 @@ bot.launch()
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
-
