@@ -13,7 +13,7 @@ function log(...args) { if (DEBUG) console.log('[drawer]', ...args); }
 async function getCanvasBounds(page) {
   // BUG3 FIX: always wait for any open panels to close before reading bounds
   const bounds = await page.evaluate(() => {
-    const c = document.querySelector('canvas.main-canvas');
+    const c = document.querySelector('canvas.main-canvas') || document.querySelector('canvas');
     if (!c) throw new Error('main-canvas not found');
     const r = c.getBoundingClientRect();
     return { x: r.left, y: r.top, width: r.width, height: r.height };
@@ -60,7 +60,7 @@ async function clickTool(page, name) {
 // ── Safe canvas focus — BUG2 FIX: use focus() not mouse click ─────────────────
 async function focusCanvas(page) {
   await page.evaluate(() => {
-    const c = document.querySelector('canvas.main-canvas');
+    const c = document.querySelector('canvas.main-canvas') || document.querySelector('canvas');
     if (c) c.focus();
   });
   await sleep(100);
@@ -116,7 +116,7 @@ async function stroke(page, points, bounds) {
 // ── Draw helpers ───────────────────────────────────────────────────────────────
 async function drawLine(page, x1, y1, x2, y2) {
   log(`drawLine: (${x1},${y1}) -> (${x2},${y2})`);
-  const bounds = await prepareBrush(page);
+  const bounds = await getCanvasBounds(page);
   const points = [];
   for (let i = 0; i <= 30; i++)
     points.push({ x: x1 + (x2 - x1) * i / 30, y: y1 + (y2 - y1) * i / 30 });
@@ -125,7 +125,7 @@ async function drawLine(page, x1, y1, x2, y2) {
 
 async function drawCircle(page, cx, cy, r) {
   log(`drawCircle: center=(${cx},${cy}) r=${r}`);
-  const bounds = await prepareBrush(page);
+  const bounds = await getCanvasBounds(page);
   const points = [];
   for (let i = 0; i <= 60; i++) {
     const a = (i / 60) * Math.PI * 2;
@@ -136,7 +136,7 @@ async function drawCircle(page, cx, cy, r) {
 
 async function drawRect(page, x1, y1, x2, y2) {
   log(`drawRect: (${x1},${y1}) -> (${x2},${y2})`);
-  const bounds = await prepareBrush(page);
+  const bounds = await getCanvasBounds(page);
   const corners = [
     { x: x1, y: y1 }, { x: x2, y: y1 },
     { x: x2, y: y2 }, { x: x1, y: y2 }, { x: x1, y: y1 }
@@ -152,7 +152,7 @@ async function drawRect(page, x1, y1, x2, y2) {
 
 async function drawFreeStroke(page, points) {
   log(`drawFreeStroke: ${points.length} points`);
-  const bounds = await prepareBrush(page);
+  const bounds = await getCanvasBounds(page);
   await stroke(page, points, bounds);
 }
 
@@ -268,7 +268,7 @@ async function setBrushSize(page, targetSize) {
   await page.bringToFront();
   await sleep(100);
   await page.evaluate(() => {
-    const c = document.querySelector('canvas.main-canvas');
+    const c = document.querySelector('canvas.main-canvas') || document.querySelector('canvas');
     if (c) c.focus();
   });
   await sleep(150);
@@ -330,7 +330,7 @@ async function selectFillTool(page) {
 // ── Screenshot — BUG4 FIX: clip full page to canvas rect (all 3 layers) ───────
 async function screenshotCanvas(page) {
   const bounds = await page.evaluate(() => {
-    const c = document.querySelector('canvas.main-canvas');
+    const c = document.querySelector('canvas.main-canvas') || document.querySelector('canvas');
     if (!c) throw new Error('main-canvas not found');
     const r = c.getBoundingClientRect();
     return { x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) };
