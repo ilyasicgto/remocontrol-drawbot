@@ -628,6 +628,47 @@ bot.command('deepdebug', async (ctx) => {
 
   await ctx.reply('✅ Deep debug complete! Send the JSON file to dev.');
 });
+// Add this to bot.js before bot.launch()
+// Tests raw stroke without any color/size changes
+
+bot.command('debugstroke', async (ctx) => {
+  if (!checkReady(ctx)) return;
+
+  // Step 1: Report canvas bounds
+  const bounds = await page.evaluate(() => {
+    const c = document.querySelector('canvas.main-canvas');
+    const r = c.getBoundingClientRect();
+    return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
+  });
+  await ctx.reply(`📐 Canvas bounds: x=${bounds.x} y=${bounds.y} w=${bounds.w} h=${bounds.h}`);
+
+  // Step 2: Draw a simple diagonal line with raw mouse events (no helper functions)
+  const x1 = bounds.x + bounds.w * 0.2;
+  const y1 = bounds.y + bounds.h * 0.2;
+  const x2 = bounds.x + bounds.w * 0.8;
+  const y2 = bounds.y + bounds.h * 0.8;
+
+  await ctx.reply(`🖱 Moving to (${Math.round(x1)},${Math.round(y1)}) → (${Math.round(x2)},${Math.round(y2)})`);
+
+  await page.mouse.move(x1, y1);
+  await sleep(50);
+  await page.mouse.down();
+  await sleep(50);
+
+  const steps = 40;
+  for (let i = 1; i <= steps; i++) {
+    const t = i / steps;
+    await page.mouse.move(x1 + (x2 - x1) * t, y1 + (y2 - y1) * t);
+    await sleep(20);
+  }
+
+  await page.mouse.up();
+  await sleep(200);
+
+  // Step 3: Screenshot
+  const shot = await page.screenshot({ type: 'jpeg', quality: 80 });
+  await ctx.replyWithPhoto({ source: shot }, { caption: '📸 After raw stroke' });
+});
 
 bot.launch();
 console.log('🤖 CrocoDraw Bot started!');
@@ -639,6 +680,7 @@ http.createServer((req, res) => res.end('CrocoDraw Bot running')).listen(process
 // Graceful shutdown
 process.once('SIGINT', () => { bot.stop('SIGINT'); if (browser) browser.close(); });
 process.once('SIGTERM', () => { bot.stop('SIGTERM'); if (browser) browser.close(); });
+
 
 
 
