@@ -348,5 +348,5 @@ module.exports = {
   drawLine, drawCircle, drawRect, drawFreeStroke, clickCanvas,
   selectBrushTool, selectFillTool, selectBrushType,
   setColor, setBrushSize, undo, redo, clearCanvas,
-  screenshotCanvas, getCanvasBounds, sleep, focusCanvas, prepareBrush,
+  screenshotCanvas, getCanvasBounds, sleep, focusCanvas,
 };
