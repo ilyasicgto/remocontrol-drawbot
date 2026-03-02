@@ -68,8 +68,10 @@ async function handleDrawCommand(cmd) {
     case 'eval':  await page.evaluate(new Function(cmd.code)); break;
     case 'clear':
       await page.evaluate(() => {
-        const c = document.querySelector('canvas');
-        c.getContext('2d').clearRect(0, 0, c.width, c.height);
+        ['main-canvas', 'temp-canvas'].forEach(cls => {
+          const c = document.querySelector('.' + cls);
+          if (c) c.getContext('2d').clearRect(0, 0, c.width, c.height);
+        });
       }); break;
     default: throw new Error(`Unknown command: ${cmd.type}`);
   }
@@ -80,8 +82,7 @@ async function handleDrawCommand(cmd) {
 // ─── Fast screenshot ──────────────────────────────────────────────────────────
 async function getScreenshot(forceRefresh = false) {
   if (!canvasDirty && screenshotCache && !forceRefresh) return screenshotCache;
-  const canvas = await page.$('canvas');
-  const png = await canvas.screenshot({ type: 'png' });
+  const png = await page.screenshot({ type: 'png', fullPage: false });
   screenshotCache = await sharp(png)
     .resize({ width: 800, withoutEnlargement: true })
     .jpeg({ quality: 70, mozjpeg: true })
@@ -102,25 +103,25 @@ async function initBrowser(url) {
     await page.setViewport({ width: 1200, height: 800 });
     await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
 
-    // Wait 5s for page to fully render instead of looking for specific selector
+    // Wait 5s for page to fully render
     await new Promise(r => setTimeout(r, 5000));
 
     await page.evaluate(() => {
       window.parasite = {
         drawLine(x1,y1,x2,y2,color='#000',width=2) {
-          const ctx = document.querySelector('canvas').getContext('2d');
+          const ctx = document.querySelector('.main-canvas').getContext('2d');
           ctx.strokeStyle=color; ctx.lineWidth=width; ctx.lineCap='round';
           ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
         },
         drawCircle(x,y,r,color='#000',fill=false) {
-          const ctx = document.querySelector('canvas').getContext('2d');
+          const ctx = document.querySelector('.main-canvas').getContext('2d');
           ctx.strokeStyle=color; ctx.fillStyle=color;
           ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2);
           if(fill) ctx.fill(); else ctx.stroke();
         },
         drawPath(points,color='#000',width=2) {
           if(!points?.length) return;
-          const ctx = document.querySelector('canvas').getContext('2d');
+          const ctx = document.querySelector('.main-canvas').getContext('2d');
           ctx.strokeStyle=color; ctx.lineWidth=width; ctx.lineCap='round'; ctx.lineJoin='round';
           ctx.beginPath(); ctx.moveTo(points[0][0],points[0][1]);
           for(let i=1;i<points.length;i++) ctx.lineTo(points[i][0],points[i][1]);
@@ -150,7 +151,7 @@ async function runAIDraw(ctx, prompt) {
 Types: {"type":"line","x1":n,"y1":n,"x2":n,"y2":n,"color":"#hex","width":n}
        {"type":"circle","x":n,"y":n,"r":n,"color":"#hex","fill":bool}
        {"type":"path","points":[[x,y],...],"color":"#hex","width":n}
-Canvas is 1200x800. Output ONLY valid JSON array, no markdown.`,
+Canvas is 1016x1200. Output ONLY valid JSON array, no markdown.`,
     messages: [{ role: 'user', content: prompt }]
   });
   let commands;
@@ -159,7 +160,7 @@ Canvas is 1200x800. Output ONLY valid JSON array, no markdown.`,
   } catch { return ctx.reply('❌ Failed to parse AI response'); }
   await ctx.reply(`✅ Got ${commands.length} commands, drawing now...`);
   await page.evaluate((cmds) => {
-    const c = document.querySelector('canvas');
+    const c = document.querySelector('.main-canvas');
     const ctx = c.getContext('2d');
     ctx.lineCap='round'; ctx.lineJoin='round';
     for(const cmd of cmds) {
@@ -218,8 +219,10 @@ bot.command('drag', async (ctx) => {
 });
 
 bot.command('clear', async (ctx) => {
-  try { await handleDrawCommand({type:'clear'}); ctx.reply('🗑 Cleared'); }
-  catch(e) { ctx.reply('❌ '+e.message); }
+  try {
+    await handleDrawCommand({type:'clear'});
+    ctx.reply('🗑 Cleared');
+  } catch(e) { ctx.reply('❌ '+e.message); }
 });
 
 bot.command('pic', async (ctx) => {
@@ -249,8 +252,10 @@ bot.command('debug', async (ctx) => {
         height: c.height
       }));
     });
-    ctx.reply('🔍 Canvases:\n' + JSON.stringify(info, null, 2));
-  } catch(e) { ctx.reply('❌ ' + e.message); }
+    const title = await page.title();
+    const bodyText = await page.evaluate(() => document.body.innerText.slice(0, 300));
+    ctx.reply(`📄 Title: ${title}\n🖼 Canvases: ${info.length}\n${JSON.stringify(info, null, 2)}\n📝 Body:\n${bodyText}`);
+  } catch(e) { ctx.reply('❌ '+e.message); }
 });
 
 // ─── Text handler LAST (so commands take priority) ────────────────────────────
@@ -276,4 +281,3 @@ bot.launch()
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
-
