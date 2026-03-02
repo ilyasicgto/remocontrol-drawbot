@@ -177,6 +177,7 @@ bot.command('line', async (ctx) => {
   const args = ctx.message.text.split(' ').slice(1);
   if (args.length < 4) return ctx.reply('Usage: /line x1 y1 x2 y2\nExample: /line 100 100 900 900');
   const [x1, y1, x2, y2] = args.map(Number);
+  await ctx.reply('⏳ Drawing line...');
   try {
     await drawLine(page, x1, y1, x2, y2);
     await sendPic(ctx);
@@ -188,6 +189,7 @@ bot.command('circle', async (ctx) => {
   const args = ctx.message.text.split(' ').slice(1);
   if (args.length < 3) return ctx.reply('Usage: /circle cx cy r\nExample: /circle 500 500 300');
   const [cx, cy, r] = args.map(Number);
+  await ctx.reply('⏳ Drawing circle...');
   try {
     await drawCircle(page, cx, cy, r);
     await sendPic(ctx);
@@ -199,6 +201,7 @@ bot.command('rect', async (ctx) => {
   const args = ctx.message.text.split(' ').slice(1);
   if (args.length < 4) return ctx.reply('Usage: /rect x1 y1 x2 y2\nExample: /rect 200 200 800 600');
   const [x1, y1, x2, y2] = args.map(Number);
+  await ctx.reply('⏳ Drawing rectangle...');
   try {
     await drawRect(page, x1, y1, x2, y2);
     await sendPic(ctx);
@@ -292,12 +295,15 @@ bot.command('ai', async (ctx) => {
   const description = ctx.message.text.split(' ').slice(1).join(' ').trim();
   if (!description) return ctx.reply('Usage: /ai <description>\nExample: /ai anime girl with blue eyes');
   await ctx.reply('🤖 Generating drawing plan...');
-  try {
-    const commands = await generateDrawingCommands(description);
-    await ctx.reply(`✅ Got ${commands.length} commands, drawing now...`);
-    await executeCommands(page, commands);
-    await sendPic(ctx);
-  } catch (e) { ctx.reply('❌ AI drawing failed: ' + e.message); }
+  // Run async so bot stays responsive
+  (async () => {
+    try {
+      const commands = await generateDrawingCommands(description);
+      await ctx.reply(`✅ Got ${commands.length} commands, drawing now...`);
+      await executeCommands(page, commands);
+      await sendPic(ctx);
+    } catch (e) { ctx.reply('❌ AI drawing failed: ' + e.message); }
+  })();
 });
 
 // ── Debug: raw stroke test ─────────────────────────────────────────────────────
