@@ -235,3 +235,7 @@ bot.command('ai', async (ctx) => {
 
 bot.launch();
 console.log('🤖 Bot started!');
+bot.catch((err, ctx) => {
+  console.error('Bot error:', err);
+});
+
