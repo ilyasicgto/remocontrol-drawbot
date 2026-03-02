@@ -33,7 +33,6 @@ WORKDIR /app
 COPY package*.json ./
 
 # Install dependencies (no Chromium download)
-RUN ls -la node_modules | grep sharp
 RUN npm install
 
 # Copy rest of the code
