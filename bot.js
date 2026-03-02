@@ -232,10 +232,26 @@ bot.command('ai', async (ctx) => {
   if (!process.env.ANTHROPIC_API_KEY) return ctx.reply('❌ ANTHROPIC_API_KEY missing');
   try { await runAIDraw(ctx, prompt); } catch(e) { ctx.reply('❌ '+e.message); }
 });
-
+bot.command('debug', async (ctx) => {
+  if (!isReady) return ctx.reply('❌ No host attached');
+  try {
+    const info = await page.evaluate(() => {
+      const canvases = document.querySelectorAll('canvas');
+      return Array.from(canvases).map((c, i) => ({
+        index: i,
+        id: c.id,
+        class: c.className,
+        width: c.width,
+        height: c.height
+      }));
+    });
+    ctx.reply('🔍 Canvases found:\n' + JSON.stringify(info, null, 2));
+  } catch(e) { ctx.reply('❌ ' + e.message); }
+});
 bot.launch()
   .then(() => console.log('✅ Telegram connected!'))
   .catch((err) => console.error('❌ Launch failed:', err.message));
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
+
