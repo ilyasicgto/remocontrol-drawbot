@@ -209,23 +209,24 @@ async function initBrowser(url) {
 
 // ─── AI Draw ──────────────────────────────────────────────────────────────────
 async function runAIDraw(ctx, prompt) {
-  const Anthropic = require('@anthropic-ai/sdk');
-  const ai = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-  await ctx.reply('🤖 Generating drawing plan...');
-  const res = await ai.messages.create({
-    model: 'claude-sonnet-4-20250514',
-    max_tokens: 4000,
-    system: `You are a drawing bot controller. Output ONLY a JSON array of drawing commands.
+const Groq = require('groq-sdk');
+const ai = new Groq({ apiKey: process.env.GROQ_API_KEY });
+const res = await ai.chat.completions.create({
+  model: 'llama-3.3-70b-versatile',
+  max_tokens: 4000,
+  messages: [
+    { role: 'system', content: `You are a drawing bot controller. Output ONLY a JSON array of drawing commands.
 Types:
 - {"type":"draw_direct","x1":n,"y1":n,"x2":n,"y2":n,"color":"#hex","width":n}
 - {"type":"circle","x":n,"y":n,"r":n,"color":"#hex","fill":bool,"width":n}
 - {"type":"path","points":[[x,y],...],"color":"#hex","width":n}
-Canvas is 1016x1200. Output ONLY valid JSON array, no markdown.`,
-    messages: [{ role: 'user', content: prompt }]
-  });
-  let commands;
-  try {
-    commands = JSON.parse(res.content[0].text.trim().replace(/```json|```/g, ''));
+Canvas is 1016x1200. Output ONLY valid JSON array, no markdown.` },
+    { role: 'user', content: prompt }
+  ]
+});
+let commands;
+try {
+  commands = JSON.parse(res.choices[0].message.content.trim().replace(/```json|```/g, ''));
   } catch { return ctx.reply('❌ Failed to parse AI response'); }
   await ctx.reply(`✅ Got ${commands.length} commands, drawing now...`);
   await page.evaluate((cmds) => {
@@ -307,7 +308,7 @@ bot.command('ai', async (ctx) => {
   if (!isReady) return ctx.reply('❌ No host attached');
   const prompt = ctx.message.text.replace('/ai', '').trim();
   if (!prompt) return ctx.reply('Usage: /ai draw a cat');
-  if (!process.env.ANTHROPIC_API_KEY) return ctx.reply('❌ ANTHROPIC_API_KEY missing');
+  if (!process.env.GROQ_API_KEY) return ctx.reply('❌ GROQ_API_KEY missing');
   try { await runAIDraw(ctx, prompt); } catch(e) { ctx.reply('❌ '+e.message); }
 });
 
@@ -358,3 +359,4 @@ bot.launch()
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
+
