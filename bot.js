@@ -21,6 +21,13 @@ const bot = new Telegraf(BOT_TOKEN);
 let browser = null;
 let page = null;
 let isReady = false;
+let isDrawing = false;
+
+function withLock(ctx, fn) {
+  if (isDrawing) return ctx.reply('⏳ Already drawing, please wait...');
+  isDrawing = true;
+  fn().catch(e => ctx.reply('❌ ' + e.message)).finally(() => { isDrawing = false; });
+}
 
 // ── Browser launch ─────────────────────────────────────────────────────────────
 async function initBrowser(url) {
@@ -48,7 +55,12 @@ async function initBrowser(url) {
 
     console.log(`🌐 Loading: ${url}`);
     await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
-    await page.waitForSelector('canvas.main-canvas', { timeout: 30000 });
+    // Try main-canvas first, fall back to any canvas
+    try {
+      await page.waitForSelector('canvas.main-canvas', { timeout: 15000 });
+    } catch(e) {
+      await page.waitForSelector('canvas', { timeout: 15000 });
+    }
     await sleep(2000);
 
     isReady = true;
@@ -178,10 +190,10 @@ bot.command('line', async (ctx) => {
   if (args.length < 4) return ctx.reply('Usage: /line x1 y1 x2 y2\nExample: /line 100 100 900 900');
   const [x1, y1, x2, y2] = args.map(Number);
   await ctx.reply('⏳ Drawing line...');
-  try {
+  withLock(ctx, async () => {
     await drawLine(page, x1, y1, x2, y2);
     await sendPic(ctx);
-  } catch (e) { ctx.reply('❌ ' + e.message); }
+  });
 });
 
 bot.command('circle', async (ctx) => {
@@ -190,10 +202,10 @@ bot.command('circle', async (ctx) => {
   if (args.length < 3) return ctx.reply('Usage: /circle cx cy r\nExample: /circle 500 500 300');
   const [cx, cy, r] = args.map(Number);
   await ctx.reply('⏳ Drawing circle...');
-  try {
+  withLock(ctx, async () => {
     await drawCircle(page, cx, cy, r);
     await sendPic(ctx);
-  } catch (e) { ctx.reply('❌ ' + e.message); }
+  });
 });
 
 bot.command('rect', async (ctx) => {
@@ -202,10 +214,10 @@ bot.command('rect', async (ctx) => {
   if (args.length < 4) return ctx.reply('Usage: /rect x1 y1 x2 y2\nExample: /rect 200 200 800 600');
   const [x1, y1, x2, y2] = args.map(Number);
   await ctx.reply('⏳ Drawing rectangle...');
-  try {
+  withLock(ctx, async () => {
     await drawRect(page, x1, y1, x2, y2);
     await sendPic(ctx);
-  } catch (e) { ctx.reply('❌ ' + e.message); }
+  });
 });
 
 bot.command('stroke', async (ctx) => {
