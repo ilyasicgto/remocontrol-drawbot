@@ -102,7 +102,7 @@ async function stroke(page, points, bounds) {
         prev.x + (curr.x - prev.x) * t,
         prev.y + (curr.y - prev.y) * t
       );
-      await sleep(6);
+      await sleep(3);
     }
   }
 
@@ -116,7 +116,7 @@ async function stroke(page, points, bounds) {
 // ── Draw helpers ───────────────────────────────────────────────────────────────
 async function drawLine(page, x1, y1, x2, y2) {
   log(`drawLine: (${x1},${y1}) -> (${x2},${y2})`);
-  const bounds = await getCanvasBounds(page);
+  const bounds = await prepareBrush(page);
   const points = [];
   for (let i = 0; i <= 30; i++)
     points.push({ x: x1 + (x2 - x1) * i / 30, y: y1 + (y2 - y1) * i / 30 });
@@ -125,7 +125,7 @@ async function drawLine(page, x1, y1, x2, y2) {
 
 async function drawCircle(page, cx, cy, r) {
   log(`drawCircle: center=(${cx},${cy}) r=${r}`);
-  const bounds = await getCanvasBounds(page);
+  const bounds = await prepareBrush(page);
   const points = [];
   for (let i = 0; i <= 60; i++) {
     const a = (i / 60) * Math.PI * 2;
@@ -136,7 +136,7 @@ async function drawCircle(page, cx, cy, r) {
 
 async function drawRect(page, x1, y1, x2, y2) {
   log(`drawRect: (${x1},${y1}) -> (${x2},${y2})`);
-  const bounds = await getCanvasBounds(page);
+  const bounds = await prepareBrush(page);
   const corners = [
     { x: x1, y: y1 }, { x: x2, y: y1 },
     { x: x2, y: y2 }, { x: x1, y: y2 }, { x: x1, y: y1 }
@@ -152,7 +152,7 @@ async function drawRect(page, x1, y1, x2, y2) {
 
 async function drawFreeStroke(page, points) {
   log(`drawFreeStroke: ${points.length} points`);
-  const bounds = await getCanvasBounds(page);
+  const bounds = await prepareBrush(page);
   await stroke(page, points, bounds);
 }
 
@@ -181,49 +181,77 @@ async function clearCanvas(page) {
 }
 
 // ── Color ──────────────────────────────────────────────────────────────────────
+function hexToHsv(hex) {
+  if (hex.startsWith('#')) hex = hex.slice(1);
+  if (hex.length === 3) hex = hex.split('').map(c => c+c).join('');
+  const r = parseInt(hex.slice(0,2),16)/255;
+  const g = parseInt(hex.slice(2,4),16)/255;
+  const b = parseInt(hex.slice(4,6),16)/255;
+  const max = Math.max(r,g,b), min = Math.min(r,g,b), d = max-min;
+  let h = 0, s = max===0 ? 0 : d/max, v = max;
+  if (max !== min) {
+    switch(max) {
+      case r: h=((g-b)/d+(g<b?6:0))/6; break;
+      case g: h=((b-r)/d+2)/6; break;
+      case b: h=((r-g)/d+4)/6; break;
+    }
+  }
+  return { h, s, v };
+}
+
 async function setColor(page, hex) {
   if (!hex.startsWith('#')) hex = '#' + hex;
   log(`setColor: ${hex}`);
 
-  // Open color picker (don't Escape after — we need it open)
+  // Open color picker
   await page.mouse.click(TOOLBAR.colorball.x, TOOLBAR.colorball.y);
   await sleep(700);
 
-  // Type hex directly into the input field
-  const ok = await page.evaluate((hexVal) => {
-    const input = document.querySelector('input.colorful-input');
-    if (!input) return false;
-    input.focus();
-    input.select();
-    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-    setter.call(input, hexVal.replace('#', ''));
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-    return true;
-  }, hex);
-
-  log(`setColor input found: ${ok}`);
+  // Method 1: Click hex input field directly and type
+  // input.colorful-input at pos=(595,659) size=90x32
+  await page.mouse.click(640, 675); // center of hex input
+  await sleep(200);
+  await page.keyboard.down('Control');
+  await page.keyboard.press('a');
+  await page.keyboard.up('Control');
+  await sleep(100);
+  await page.keyboard.type(hex.replace('#', ''), { delay: 50 });
   await sleep(200);
   await page.keyboard.press('Enter');
-  await sleep(200);
+  await sleep(300);
 
-  // BUG3 FIX: Escape to close picker, then wait long enough for canvas to settle
+  // Method 2: Also set via react-colorful sliders as backup
+  // From deepdebug: hue slider pos=(540,610) size=200x12
+  //                 saturation box pos=(540,459) size=200x136
+  const hsv = hexToHsv(hex);
+  // Click hue slider
+  const hueX = 540 + hsv.h * 200;
+  const hueY = 616; // center of hue slider
+  await page.mouse.click(Math.round(hueX), Math.round(hueY));
+  await sleep(150);
+  // Click saturation box
+  const satX = 540 + hsv.s * 200;
+  const satY = 459 + (1 - hsv.v) * 136;
+  await page.mouse.click(Math.round(satX), Math.round(satY));
+  await sleep(150);
+
+  // Close picker with Escape
   await page.keyboard.press('Escape');
-  await sleep(600);
+  await sleep(500);
 
-  // Re-select brush tool (Escape after to close brush panel if it opened)
+  // Re-select brush (Escape to close brush list if opened)
   await page.mouse.click(TOOLBAR.brush.x, TOOLBAR.brush.y);
   await sleep(300);
   await page.keyboard.press('Escape');
   await sleep(400);
 
-  log('setColor done, picker closed');
+  log(`setColor done: hue=${hsv.h.toFixed(2)} sat=${hsv.s.toFixed(2)} val=${hsv.v.toFixed(2)}`);
 }
 
 // ── Brush size — Z/X keys ─────────────────────────────────────────────────────
 async function setBrushSize(page, targetSize) {
   const size = Math.max(1, Math.min(100, Math.round(targetSize)));
-  log(`setBrushSize: target=${size}`);
+  log("setBrushSize: target=" + size);
 
   const currentSize = await page.evaluate(() => {
     const el = document.querySelector('.brush-info');
@@ -232,16 +260,22 @@ async function setBrushSize(page, targetSize) {
     return match ? parseInt(match[1]) : 10;
   });
 
-  log(`setBrushSize: current=${currentSize}`);
+  log("setBrushSize: current=" + currentSize);
   const diff = size - currentSize;
   if (diff === 0) return;
 
-  // BUG2 FIX: focus canvas via JS not mouse click
-  await focusCanvas(page);
+  // Bring page to front and focus canvas properly
+  await page.bringToFront();
+  await sleep(100);
+  await page.evaluate(() => {
+    const c = document.querySelector('canvas.main-canvas');
+    if (c) c.focus();
+  });
+  await sleep(150);
 
   const key = diff > 0 ? 'z' : 'x';
   const presses = Math.abs(diff);
-  log(`setBrushSize: pressing ${key} x${presses}`);
+  log("setBrushSize: pressing " + key + " x" + presses);
 
   for (let i = 0; i < presses; i++) {
     await page.keyboard.press(key);
@@ -254,10 +288,10 @@ async function setBrushSize(page, targetSize) {
     if (!el) return '?';
     return el.textContent;
   });
-  log(`setBrushSize done: brush-info now shows "${newSize}"`);
+  log("setBrushSize done: " + newSize);
 }
 
-// ── Brush type ─────────────────────────────────────────────────────────────────
+
 async function selectBrushType(page, brushName) {
   log(`selectBrushType: ${brushName}`);
   // Click brush tool to open list (don't Escape yet — need list open)
@@ -314,5 +348,5 @@ module.exports = {
   drawLine, drawCircle, drawRect, drawFreeStroke, clickCanvas,
   selectBrushTool, selectFillTool, selectBrushType,
   setColor, setBrushSize, undo, redo, clearCanvas,
-  screenshotCanvas, getCanvasBounds, sleep, focusCanvas,
+  screenshotCanvas, getCanvasBounds, sleep, focusCanvas, prepareBrush,
 };
