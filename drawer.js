@@ -88,21 +88,21 @@ async function stroke(page, points, bounds) {
   log(`Stroke start: canvas(${points[0].x},${points[0].y}) -> viewport(${Math.round(first.x)},${Math.round(first.y)})`);
 
   await page.mouse.move(first.x, first.y);
-  await sleep(30);
+  await sleep(10);
   await page.mouse.down();
-  await sleep(30);
+  await sleep(10);
 
   for (let i = 1; i < points.length; i++) {
     const prev = toAbsolute(points[i - 1].x, points[i - 1].y, freshBounds);
     const curr = toAbsolute(points[i].x, points[i].y, freshBounds);
-    const steps = Math.max(8, Math.round(dist(prev, curr) / 3));
+    const steps = Math.max(2, Math.round(dist(prev, curr) / 10));
     for (let s = 1; s <= steps; s++) {
       const t = s / steps;
       await page.mouse.move(
         prev.x + (curr.x - prev.x) * t,
         prev.y + (curr.y - prev.y) * t
       );
-      await sleep(3);
+      await sleep(1);
     }
   }
 
@@ -127,8 +127,8 @@ async function drawCircle(page, cx, cy, r) {
   log(`drawCircle: center=(${cx},${cy}) r=${r}`);
   const bounds = await getCanvasBounds(page);
   const points = [];
-  for (let i = 0; i <= 60; i++) {
-    const a = (i / 60) * Math.PI * 2;
+  for (let i = 0; i <= 20; i++) {
+    const a = (i / 20) * Math.PI * 2;
     points.push({ x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r });
   }
   await stroke(page, points, bounds);
