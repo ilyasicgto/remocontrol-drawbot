@@ -233,9 +233,9 @@ bot.command('ai', async (ctx) => {
   try { await runAIDraw(ctx, prompt); } catch(e) { ctx.reply('❌ '+e.message); }
 });
 
-bot.launch();
-console.log('🤖 Bot started!');
-bot.catch((err, ctx) => {
-  console.error('Bot error:', err);
-});
+bot.launch()
+  .then(() => console.log('✅ Telegram connected!'))
+  .catch((err) => console.error('❌ Launch failed:', err.message));
 
+process.once('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));
