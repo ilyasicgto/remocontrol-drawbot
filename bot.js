@@ -37,45 +37,13 @@ function broadcast(data) {
     if (ws.readyState === WebSocket.OPEN) ws.send(payload);
 }
 
-// ─── Get canvas bounds (where to draw) ───────────────────────────────────────
-async function getCanvasBounds() {
-  return await page.evaluate(() => {
-    const c = document.querySelector('.main-canvas');
-    const rect = c.getBoundingClientRect();
-    return { x: rect.left, y: rect.top, w: rect.width, h: rect.height };
-  });
-}
-
 // ─── Core draw handler ────────────────────────────────────────────────────────
 async function handleDrawCommand(cmd) {
   if (!isReady) throw new Error('No host attached');
 
   switch (cmd.type) {
 
-    case 'line': {
-      // Draw by simulating real mouse drag on the canvas
-      const b = await getCanvasBounds();
-      // Convert logical coords to screen coords
-      const sx1 = b.x + (+cmd.x1 / 1016) * b.w;
-      const sy1 = b.y + (+cmd.y1 / 1200) * b.h;
-      const sx2 = b.x + (+cmd.x2 / 1016) * b.w;
-      const sy2 = b.y + (+cmd.y2 / 1200) * b.h;
-      await page.mouse.move(sx1, sy1);
-      await page.mouse.down();
-      const steps = 30;
-      for (let i = 1; i <= steps; i++) {
-        await page.mouse.move(
-          sx1 + (sx2 - sx1) * i / steps,
-          sy1 + (sy2 - sy1) * i / steps,
-          { steps: 1 }
-        );
-      }
-      await page.mouse.up();
-      break;
-    }
-
     case 'draw_direct': {
-      // Direct canvas injection (bypass app, raw draw)
       await page.evaluate((c) => {
         const canvas = document.querySelector('.main-canvas');
         const ctx = canvas.getContext('2d');
@@ -87,7 +55,8 @@ async function handleDrawCommand(cmd) {
         ctx.moveTo(+c.x1, +c.y1);
         ctx.lineTo(+c.x2, +c.y2);
         ctx.stroke();
-      }, cmd); break;
+      }, cmd);
+      break;
     }
 
     case 'circle': {
@@ -95,11 +64,12 @@ async function handleDrawCommand(cmd) {
         const ctx = document.querySelector('.main-canvas').getContext('2d');
         ctx.strokeStyle = c.color || '#000';
         ctx.fillStyle = c.color || '#000';
-        ctx.lineWidth = c.width || 2;
+        ctx.lineWidth = +c.width || 2;
         ctx.beginPath();
         ctx.arc(+c.x, +c.y, +c.r, 0, Math.PI * 2);
         if (c.fill === true || c.fill === 'true') ctx.fill(); else ctx.stroke();
-      }, cmd); break;
+      }, cmd);
+      break;
     }
 
     case 'path': {
@@ -107,60 +77,27 @@ async function handleDrawCommand(cmd) {
         if (!c.points?.length) return;
         const ctx = document.querySelector('.main-canvas').getContext('2d');
         ctx.strokeStyle = c.color || '#000';
-        ctx.lineWidth = c.width || 2;
+        ctx.lineWidth = +c.width || 2;
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
         ctx.beginPath();
         ctx.moveTo(c.points[0][0], c.points[0][1]);
         for (let i = 1; i < c.points.length; i++) ctx.lineTo(c.points[i][0], c.points[i][1]);
         ctx.stroke();
-      }, cmd); break;
-    }
-
-    case 'color': {
-      // Set color by injecting into app state
-      await page.evaluate((color) => {
-        // Try to find color input or set via app internals
-        const inputs = document.querySelectorAll('input[type=color]');
-        if (inputs.length) {
-          inputs[0].value = color;
-          inputs[0].dispatchEvent(new Event('input', { bubbles: true }));
-          inputs[0].dispatchEvent(new Event('change', { bubbles: true }));
-        }
-        // Store for next draw operations
-        window._parasiteColor = color;
-      }, cmd.color); break;
-    }
-
-    case 'size': {
-      await page.evaluate((size) => {
-        const inputs = document.querySelectorAll('input[type=range]');
-        if (inputs.length) {
-          inputs[0].value = size;
-          inputs[0].dispatchEvent(new Event('input', { bubbles: true }));
-          inputs[0].dispatchEvent(new Event('change', { bubbles: true }));
-        }
-        window._parasiteSize = size;
-      }, cmd.size); break;
+      }, cmd);
+      break;
     }
 
     case 'clear': {
-      // Click the X button in the app UI
       await page.evaluate(() => {
-        // Find clear button by looking for buttons with X or clear text
-        const buttons = document.querySelectorAll('button');
-        for (const btn of buttons) {
-          const text = btn.innerText.trim();
-          const title = (btn.title || btn.getAttribute('aria-label') || '').toLowerCase();
-          if (text === '✕' || text === '×' || text === 'X' || title.includes('clear') || title.includes('delete')) {
-            btn.click();
-            return 'clicked: ' + (title || text);
-          }
-        }
-        // Fallback: clear canvas directly
-        ['main-canvas', 'temp-canvas'].forEach(cls => {
+        ['main-canvas', 'temp-canvas', 'grid-canvas'].forEach(cls => {
           const c = document.querySelector('.' + cls);
-          if (c) c.getContext('2d').clearRect(0, 0, c.width, c.height);
+          if (c) {
+            const ctx = c.getContext('2d');
+            ctx.clearRect(0, 0, c.width, c.height);
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, c.width, c.height);
+          }
         });
       });
       break;
@@ -190,16 +127,20 @@ async function handleDrawCommand(cmd) {
           +cmd.y1 + ((+cmd.y2 - +cmd.y1) * i / steps)
         );
       }
-      await page.mouse.up(); break;
+      await page.mouse.up();
+      break;
     }
 
     case 'click':
-      await page.mouse.click(+cmd.x, +cmd.y); break;
+      await page.mouse.click(+cmd.x, +cmd.y);
+      break;
 
     case 'eval':
-      await page.evaluate(new Function(cmd.code)); break;
+      await page.evaluate(new Function(cmd.code));
+      break;
 
-    default: throw new Error(`Unknown command: ${cmd.type}`);
+    default:
+      throw new Error(`Unknown command: ${cmd.type}`);
   }
 
   canvasDirty = true;
@@ -209,11 +150,26 @@ async function handleDrawCommand(cmd) {
 // ─── Screenshot ───────────────────────────────────────────────────────────────
 async function getScreenshot(forceRefresh = false) {
   if (!canvasDirty && screenshotCache && !forceRefresh) return screenshotCache;
-  const png = await page.screenshot({ type: 'png', fullPage: false });
-  screenshotCache = await sharp(png)
+
+  // Screenshot only the main canvas element with white background
+  const png = await page.evaluate(async () => {
+    const canvas = document.querySelector('.main-canvas');
+    const offscreen = document.createElement('canvas');
+    offscreen.width = canvas.width;
+    offscreen.height = canvas.height;
+    const ctx = offscreen.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, offscreen.width, offscreen.height);
+    ctx.drawImage(canvas, 0, 0);
+    return offscreen.toDataURL('image/png').split(',')[1];
+  });
+
+  const buf = Buffer.from(png, 'base64');
+  screenshotCache = await sharp(buf)
     .resize({ width: 800, withoutEnlargement: true })
     .jpeg({ quality: 75, mozjpeg: true })
     .toBuffer();
+
   canvasDirty = false;
   return screenshotCache;
 }
@@ -230,6 +186,17 @@ async function initBrowser(url) {
     await page.setViewport({ width: 1280, height: 800 });
     await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
     await new Promise(r => setTimeout(r, 5000));
+
+    // Set white background on main canvas
+    await page.evaluate(() => {
+      const canvas = document.querySelector('.main-canvas');
+      if (canvas) {
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+    });
+
     isReady = true;
     canvasDirty = true;
     console.log('✅ Browser ready!');
@@ -246,18 +213,19 @@ async function runAIDraw(ctx, prompt) {
   const ai = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
   await ctx.reply('🤖 Generating drawing plan...');
   const res = await ai.messages.create({
-    model: 'claude-sonnet-4-20250514', max_tokens: 4000,
+    model: 'claude-sonnet-4-20250514',
+    max_tokens: 4000,
     system: `You are a drawing bot controller. Output ONLY a JSON array of drawing commands.
 Types:
 - {"type":"draw_direct","x1":n,"y1":n,"x2":n,"y2":n,"color":"#hex","width":n}
 - {"type":"circle","x":n,"y":n,"r":n,"color":"#hex","fill":bool,"width":n}
 - {"type":"path","points":[[x,y],...],"color":"#hex","width":n}
-Canvas is 1016x1200. Use draw_direct for lines/strokes. Output ONLY valid JSON array, no markdown.`,
+Canvas is 1016x1200. Output ONLY valid JSON array, no markdown.`,
     messages: [{ role: 'user', content: prompt }]
   });
   let commands;
   try {
-    commands = JSON.parse(res.content[0].text.trim().replace(/```json|```/g,''));
+    commands = JSON.parse(res.content[0].text.trim().replace(/```json|```/g, ''));
   } catch { return ctx.reply('❌ Failed to parse AI response'); }
   await ctx.reply(`✅ Got ${commands.length} commands, drawing now...`);
   await page.evaluate((cmds) => {
@@ -285,12 +253,12 @@ Canvas is 1016x1200. Use draw_direct for lines/strokes. Output ONLY valid JSON a
   await ctx.replyWithPhoto({ source: await getScreenshot(true) }, { caption: '🖼 Done!' });
 }
 
-// ─── Commands ─────────────────────────────────────────────────────────────────
+// ─── Telegram Commands ────────────────────────────────────────────────────────
 bot.command('start', (ctx) => ctx.reply(
   '🦠 *Parasite Bot*\n\n📎 Send URL to attach\n\n' +
   '*Commands:*\n`/line x1 y1 x2 y2 [#color] [width]`\n' +
-  '`/circle x y r [#color] [fill]`\n`/color #hex`\n`/size px`\n' +
-  '`/undo` `/redo` `/clear`\n`/ai [prompt]`\n`/pic`\n`/debug`',
+  '`/circle x y r [#color] [fill]`\n`/undo` `/redo` `/clear`\n' +
+  '`/ai [prompt]`\n`/pic`\n`/debug`',
   { parse_mode: 'Markdown' }
 ));
 
@@ -312,24 +280,6 @@ bot.command('circle', async (ctx) => {
   } catch(e) { ctx.reply('❌ '+e.message); }
 });
 
-bot.command('color', async (ctx) => {
-  const color = ctx.message.text.split(' ')[1];
-  if (!color) return ctx.reply('Usage: /color #ff0000');
-  try {
-    await handleDrawCommand({ type:'color', color });
-    ctx.reply(`🎨 Color set to ${color}`);
-  } catch(e) { ctx.reply('❌ '+e.message); }
-});
-
-bot.command('size', async (ctx) => {
-  const size = ctx.message.text.split(' ')[1];
-  if (!size) return ctx.reply('Usage: /size 10');
-  try {
-    await handleDrawCommand({ type:'size', size: +size });
-    ctx.reply(`📏 Size set to ${size}px`);
-  } catch(e) { ctx.reply('❌ '+e.message); }
-});
-
 bot.command('undo', async (ctx) => {
   try { await handleDrawCommand({ type:'undo' }); ctx.reply('↩️ Undone'); }
   catch(e) { ctx.reply('❌ '+e.message); }
@@ -341,8 +291,10 @@ bot.command('redo', async (ctx) => {
 });
 
 bot.command('clear', async (ctx) => {
-  try { await handleDrawCommand({ type:'clear' }); ctx.reply('🗑 Cleared'); }
-  catch(e) { ctx.reply('❌ '+e.message); }
+  try {
+    await handleDrawCommand({ type:'clear' });
+    ctx.reply('🗑 Cleared');
+  } catch(e) { ctx.reply('❌ '+e.message); }
 });
 
 bot.command('pic', async (ctx) => {
@@ -353,8 +305,8 @@ bot.command('pic', async (ctx) => {
 
 bot.command('ai', async (ctx) => {
   if (!isReady) return ctx.reply('❌ No host attached');
-  const prompt = ctx.message.text.replace('/ai','').trim();
-  if (!prompt) return ctx.reply('Usage: /ai draw a sunset');
+  const prompt = ctx.message.text.replace('/ai', '').trim();
+  if (!prompt) return ctx.reply('Usage: /ai draw a cat');
   if (!process.env.ANTHROPIC_API_KEY) return ctx.reply('❌ ANTHROPIC_API_KEY missing');
   try { await runAIDraw(ctx, prompt); } catch(e) { ctx.reply('❌ '+e.message); }
 });
@@ -380,7 +332,7 @@ bot.command('debug', async (ctx) => {
         }))
       };
     });
-    ctx.reply('🔍 Debug:\n' + JSON.stringify(info, null, 2).slice(0, 3000));
+    ctx.reply('🔍 Debug:\n' + JSON.stringify(info, null, 2).slice(0, 3500));
   } catch(e) { ctx.reply('❌ '+e.message); }
 });
 
@@ -391,7 +343,7 @@ bot.on('text', async (ctx) => {
   if (t.startsWith('http')) {
     await ctx.reply('⏳ Attaching...');
     const ok = await initBrowser(t);
-    return ctx.reply(ok ? '✅ Attached! Use /pic to see canvas' : '❌ Failed to attach');
+    return ctx.reply(ok ? '✅ Attached! Use /pic' : '❌ Failed.');
   }
 });
 
