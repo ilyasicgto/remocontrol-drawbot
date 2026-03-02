@@ -68,7 +68,7 @@ async function handleDrawCommand(cmd) {
     case 'eval':  await page.evaluate(new Function(cmd.code)); break;
     case 'clear':
       await page.evaluate(() => {
-        const c = document.querySelector('.main-canvas');
+        const c = document.querySelector('canvas');
         c.getContext('2d').clearRect(0, 0, c.width, c.height);
       }); break;
     default: throw new Error(`Unknown command: ${cmd.type}`);
@@ -80,7 +80,7 @@ async function handleDrawCommand(cmd) {
 // ─── Fast screenshot ──────────────────────────────────────────────────────────
 async function getScreenshot(forceRefresh = false) {
   if (!canvasDirty && screenshotCache && !forceRefresh) return screenshotCache;
-  const canvas = await page.$('.main-canvas');
+  const canvas = await page.$('canvas');
   const png = await canvas.screenshot({ type: 'png' });
   screenshotCache = await sharp(png)
     .resize({ width: 800, withoutEnlargement: true })
@@ -101,23 +101,26 @@ async function initBrowser(url) {
     page = await browser.newPage();
     await page.setViewport({ width: 1200, height: 800 });
     await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+
+    // Wait 5s for page to fully render instead of looking for specific selector
     await new Promise(r => setTimeout(r, 5000));
+
     await page.evaluate(() => {
       window.parasite = {
         drawLine(x1,y1,x2,y2,color='#000',width=2) {
-          const ctx = document.querySelector('.main-canvas').getContext('2d');
+          const ctx = document.querySelector('canvas').getContext('2d');
           ctx.strokeStyle=color; ctx.lineWidth=width; ctx.lineCap='round';
           ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
         },
         drawCircle(x,y,r,color='#000',fill=false) {
-          const ctx = document.querySelector('.main-canvas').getContext('2d');
+          const ctx = document.querySelector('canvas').getContext('2d');
           ctx.strokeStyle=color; ctx.fillStyle=color;
           ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2);
           if(fill) ctx.fill(); else ctx.stroke();
         },
         drawPath(points,color='#000',width=2) {
           if(!points?.length) return;
-          const ctx = document.querySelector('.main-canvas').getContext('2d');
+          const ctx = document.querySelector('canvas').getContext('2d');
           ctx.strokeStyle=color; ctx.lineWidth=width; ctx.lineCap='round'; ctx.lineJoin='round';
           ctx.beginPath(); ctx.moveTo(points[0][0],points[0][1]);
           for(let i=1;i<points.length;i++) ctx.lineTo(points[i][0],points[i][1]);
@@ -125,10 +128,15 @@ async function initBrowser(url) {
         }
       };
     });
-    isReady = true; canvasDirty = true;
+
+    isReady = true;
+    canvasDirty = true;
     console.log('✅ Browser ready!');
     return true;
-  } catch(e) { console.error('❌',e.message); return false; }
+  } catch(e) {
+    console.error('❌ Browser failed:', e.message);
+    return false;
+  }
 }
 
 // ─── AI Draw ──────────────────────────────────────────────────────────────────
@@ -150,9 +158,8 @@ Canvas is 1200x800. Output ONLY valid JSON array, no markdown.`,
     commands = JSON.parse(res.content[0].text.trim().replace(/```json|```/g,''));
   } catch { return ctx.reply('❌ Failed to parse AI response'); }
   await ctx.reply(`✅ Got ${commands.length} commands, drawing now...`);
-  // ALL commands in ONE evaluate = no round trips = fast!
   await page.evaluate((cmds) => {
-    const c = document.querySelector('.main-canvas');
+    const c = document.querySelector('canvas');
     const ctx = c.getContext('2d');
     ctx.lineCap='round'; ctx.lineJoin='round';
     for(const cmd of cmds) {
@@ -179,39 +186,35 @@ Canvas is 1200x800. Output ONLY valid JSON array, no markdown.`,
 bot.command('start', (ctx) => ctx.reply(
   '🦠 *Parasite Bot* Ready!\n\n📎 Send URL to attach\n\n' +
   '*Commands:*\n`/line x1 y1 x2 y2 [#color] [width]`\n`/circle x y r [#color] [fill]`\n' +
-  '`/drag x1 y1 x2 y2`\n`/ai [prompt]`\n`/pic`\n`/clear`\n\n' +
+  '`/drag x1 y1 x2 y2`\n`/ai [prompt]`\n`/pic`\n`/clear`\n`/debug`\n\n' +
   '*WS:* `ws://HOST:3000`', { parse_mode: 'Markdown' }
 ));
-
-bot.on('text', async (ctx) => {
-  const t = ctx.message.text;
-  if (t.startsWith('/')) return;
-  if (t.startsWith('http')) {
-    await ctx.reply('⏳ Attaching...');
-    const ok = await initBrowser(t);
-    return ctx.reply(ok ? '✅ Attached! Use /pic' : '❌ Failed.');
-  }
-});
 
 bot.command('line', async (ctx) => {
   const [x1,y1,x2,y2,color='#000000',width='2'] = ctx.message.text.split(' ').slice(1);
   if (!x2) return ctx.reply('Usage: /line 100 100 400 400 #ff0000 5');
-  try { await handleDrawCommand({type:'line',x1,y1,x2,y2,color,width}); ctx.replyWithPhoto({source:await getScreenshot()}); }
-  catch(e) { ctx.reply('❌ '+e.message); }
+  try {
+    await handleDrawCommand({type:'line',x1,y1,x2,y2,color,width});
+    ctx.replyWithPhoto({source: await getScreenshot()});
+  } catch(e) { ctx.reply('❌ '+e.message); }
 });
 
 bot.command('circle', async (ctx) => {
   const [x,y,r,color='#000000',fill='false'] = ctx.message.text.split(' ').slice(1);
   if (!r) return ctx.reply('Usage: /circle 400 300 50 #3498db true');
-  try { await handleDrawCommand({type:'circle',x,y,r,color,fill}); ctx.replyWithPhoto({source:await getScreenshot()}); }
-  catch(e) { ctx.reply('❌ '+e.message); }
+  try {
+    await handleDrawCommand({type:'circle',x,y,r,color,fill});
+    ctx.replyWithPhoto({source: await getScreenshot()});
+  } catch(e) { ctx.reply('❌ '+e.message); }
 });
 
 bot.command('drag', async (ctx) => {
   const [x1,y1,x2,y2,steps='20'] = ctx.message.text.split(' ').slice(1);
   if (!x2) return ctx.reply('Usage: /drag 100 100 400 400');
-  try { await handleDrawCommand({type:'drag',x1,y1,x2,y2,steps:+steps}); ctx.replyWithPhoto({source:await getScreenshot()}); }
-  catch(e) { ctx.reply('❌ '+e.message); }
+  try {
+    await handleDrawCommand({type:'drag',x1,y1,x2,y2,steps:+steps});
+    ctx.replyWithPhoto({source: await getScreenshot()});
+  } catch(e) { ctx.reply('❌ '+e.message); }
 });
 
 bot.command('clear', async (ctx) => {
@@ -221,7 +224,7 @@ bot.command('clear', async (ctx) => {
 
 bot.command('pic', async (ctx) => {
   if (!isReady) return ctx.reply('❌ No host attached');
-  try { ctx.replyWithPhoto({source:await getScreenshot(true)}); }
+  try { await ctx.replyWithPhoto({source: await getScreenshot(true)}); }
   catch(e) { ctx.reply('❌ '+e.message); }
 });
 
@@ -232,6 +235,7 @@ bot.command('ai', async (ctx) => {
   if (!process.env.ANTHROPIC_API_KEY) return ctx.reply('❌ ANTHROPIC_API_KEY missing');
   try { await runAIDraw(ctx, prompt); } catch(e) { ctx.reply('❌ '+e.message); }
 });
+
 bot.command('debug', async (ctx) => {
   if (!isReady) return ctx.reply('❌ No host attached');
   try {
@@ -240,17 +244,29 @@ bot.command('debug', async (ctx) => {
     const bodyText = await page.evaluate(() => document.body.innerText.slice(0, 500));
     const canvases = await page.evaluate(() => document.querySelectorAll('canvas').length);
     ctx.reply(`📄 Title: ${title}\n🔗 URL: ${url}\n🖼 Canvases: ${canvases}\n📝 Body:\n${bodyText}`);
-  } catch(e) { ctx.reply('❌ ' + e.message); }
+  } catch(e) { ctx.reply('❌ '+e.message); }
 });
+
+// ─── Text handler LAST (so commands take priority) ────────────────────────────
+bot.on('text', async (ctx) => {
+  const t = ctx.message.text;
+  if (t.startsWith('/')) return;
+  if (t.startsWith('http')) {
+    await ctx.reply('⏳ Attaching...');
+    const ok = await initBrowser(t);
+    return ctx.reply(ok ? '✅ Attached! Use /pic' : '❌ Failed.');
+  }
+});
+
+// ─── Error handler ────────────────────────────────────────────────────────────
 bot.catch((err, ctx) => {
-  console.error('Bot error:', err);
+  console.error('Bot error:', err.message);
+  ctx.reply('❌ Error: ' + err.message);
 });
+
 bot.launch()
   .then(() => console.log('✅ Telegram connected!'))
   .catch((err) => console.error('❌ Launch failed:', err.message));
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
-
-
-
