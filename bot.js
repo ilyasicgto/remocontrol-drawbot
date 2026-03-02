@@ -239,12 +239,18 @@ bot.command('ai', async (ctx) => {
 bot.command('debug', async (ctx) => {
   if (!isReady) return ctx.reply('❌ No host attached');
   try {
-    const title = await page.title();
-    const url = page.url();
-    const bodyText = await page.evaluate(() => document.body.innerText.slice(0, 500));
-    const canvases = await page.evaluate(() => document.querySelectorAll('canvas').length);
-    ctx.reply(`📄 Title: ${title}\n🔗 URL: ${url}\n🖼 Canvases: ${canvases}\n📝 Body:\n${bodyText}`);
-  } catch(e) { ctx.reply('❌ '+e.message); }
+    const info = await page.evaluate(() => {
+      const canvases = document.querySelectorAll('canvas');
+      return Array.from(canvases).map((c, i) => ({
+        index: i,
+        id: c.id,
+        class: c.className,
+        width: c.width,
+        height: c.height
+      }));
+    });
+    ctx.reply('🔍 Canvases:\n' + JSON.stringify(info, null, 2));
+  } catch(e) { ctx.reply('❌ ' + e.message); }
 });
 
 // ─── Text handler LAST (so commands take priority) ────────────────────────────
@@ -270,3 +276,4 @@ bot.launch()
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
+
