@@ -101,7 +101,7 @@ async function initBrowser(url) {
     page = await browser.newPage();
     await page.setViewport({ width: 1200, height: 800 });
     await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
-    await page.waitForSelector('.main-canvas', { timeout: 30000 });
+    await new Promise(r => setTimeout(r, 5000));
     await page.evaluate(() => {
       window.parasite = {
         drawLine(x1,y1,x2,y2,color='#000',width=2) {
@@ -242,11 +242,15 @@ bot.command('debug', async (ctx) => {
     ctx.reply(`📄 Title: ${title}\n🔗 URL: ${url}\n🖼 Canvases: ${canvases}\n📝 Body:\n${bodyText}`);
   } catch(e) { ctx.reply('❌ ' + e.message); }
 });
+bot.catch((err, ctx) => {
+  console.error('Bot error:', err);
+});
 bot.launch()
   .then(() => console.log('✅ Telegram connected!'))
   .catch((err) => console.error('❌ Launch failed:', err.message));
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
+
 
 
