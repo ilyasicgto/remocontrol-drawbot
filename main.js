@@ -133,11 +133,15 @@ bot.command('pic', async (ctx) => {
 
 bot.command('line', async (ctx) => {
   if (!checkReady(ctx)) return;
-  const args = ctx.message.text.split(' ').slice(1).map(Number);
-  if (args.length < 4) return ctx.reply('Usage: /line x1 y1 x2 y2\nCoords: 0-1000');
+  const parts = ctx.message.text.split(' ').slice(1);
+  const colorArg = parts.find(p => p.startsWith('#'));
+  const nums = parts.filter(p => !p.startsWith('#')).map(Number).filter(n => !isNaN(n));
+  if (nums.length < 4) return ctx.reply('Usage: /line x1 y1 x2 y2 [#color] [size]\nCoords: 0-1000');
   await ctx.reply('⏳ Drawing...');
   withLock(ctx, async () => {
-    await drawLine(page, args[0], args[1], args[2], args[3]);
+    if (colorArg) await setColor(page, colorArg);
+    if (nums[4]) await setBrushSize(page, nums[4]);
+    await drawLine(page, nums[0], nums[1], nums[2], nums[3]);
     await sendPic(ctx);
   });
 });
