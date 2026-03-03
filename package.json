@@ -2,10 +2,11 @@
   "name": "crocodraw-bot",
   "version": "1.0.0",
   "description": "Telegram bot to control CrocoDraw canvas",
-  "main": "bot.js",
+  "main": "server.js",
   "scripts": {
-    "start": "node bot.js",
-    "dev": "nodemon bot.js"
+    "start": "node server.js & node bot.js",
+    "server": "node server.js",
+    "bot": "node bot.js"
   },
   "dependencies": {
     "telegraf": "^4.16.3",
@@ -18,4 +19,3 @@
     "node": ">=18.0.0"
   }
 }
-
