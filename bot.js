@@ -66,7 +66,7 @@ Output ONLY valid JSON array, no markdown, no explanation.`;
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({
-      model: 'qwen/qwen2.5-vl-72b-instruct:free',
+      model: 'google/gemma-3-27b-it:free',
       messages,
       max_tokens: 4000
     })
@@ -371,5 +371,6 @@ bot.launch()
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
+
 
 
