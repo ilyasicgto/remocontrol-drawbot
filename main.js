@@ -1,12 +1,11 @@
 /**
- * main.js — Server + Bot in one file
+ * main.js — Bot + Server in one file
  */
 
 const http = require('http');
 const https = require('https');
-const WebSocket = require('ws');
-const puppeteer = require('puppeteer');
 const { Telegraf } = require('telegraf');
+const puppeteer = require('puppeteer');
 const Groq = require('groq-sdk');
 
 const {
@@ -31,8 +30,17 @@ async function initBrowser(url) {
   console.log('🚀 Launching browser for:', url);
   browser = await puppeteer.launch({
     headless: true,
+    protocolTimeout: 120000,
     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-    args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage','--disable-gpu','--window-size=1280,900'],
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--window-size=1280,900',
+      '--disable-web-security',
+      '--disable-features=IsolateOrigins,site-per-process'
+    ],
   });
   page = await browser.newPage();
   await page.setViewport({ width: 1280, height: 900 });
@@ -40,15 +48,15 @@ async function initBrowser(url) {
   await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
   try { await page.waitForSelector('canvas.main-canvas', { timeout: 15000 }); }
   catch(e) { await page.waitForSelector('canvas', { timeout: 15000 }); }
-  await sleep(2000);
+  await sleep(3000);
   isReady = true;
   console.log('✅ Browser ready!');
 }
 
 // ── Screenshot ────────────────────────────────────────────────────────────────
-async function getScreenshot() {
+async function sendPic(ctx) {
   const jpg = await screenshotCanvas(page);
-  return Buffer.from(jpg).toString('base64');
+  await ctx.replyWithPhoto({ source: jpg });
 }
 
 // ── AI image via Groq vision ──────────────────────────────────────────────────
@@ -104,7 +112,8 @@ async function getTelegramFileBase64(ctx, fileId) {
 function withLock(ctx, fn) {
   if (isDrawing) return ctx.reply('⏳ Already drawing, please wait...');
   isDrawing = true;
-  fn().catch(e => ctx.reply('❌ ' + e.message)).finally(() => { isDrawing = false; });
+  const timeout = setTimeout(() => { isDrawing = false; }, 120000);
+  fn().catch(e => ctx.reply('❌ ' + e.message)).finally(() => { isDrawing = false; clearTimeout(timeout); });
 }
 
 function checkReady(ctx) {
@@ -112,23 +121,42 @@ function checkReady(ctx) {
   return true;
 }
 
-async function sendPic(ctx) {
-  const jpg = await screenshotCanvas(page);
-  await ctx.replyWithPhoto({ source: jpg });
-}
-
 // ── Telegram Commands ─────────────────────────────────────────────────────────
 bot.command('start', (ctx) => ctx.reply(
   '🦠 *Parasite Bot*\n\n📎 Send a CrocoDraw URL to attach\n\n' +
-  '*Commands:*\n`/line x1 y1 x2 y2`\n`/circle cx cy r`\n`/rect x1 y1 x2 y2`\n' +
-  '`/color #hex` `/size px`\n`/undo` `/redo` `/clear`\n' +
-  '`/ai description` — AI manga drawing\n📸 Send a photo to redraw it!\n`/pic`',
+  '*Commands:*\n`/line x1 y1 x2 y2 [#color] [size]`\n`/circle cx cy r [#color]`\n`/rect x1 y1 x2 y2 [#color]`\n' +
+  '`/color #hex` `/size px` `/brush name`\n`/undo` `/redo` `/clear`\n' +
+  '`/ai description`\n📸 Send a photo to redraw it!\n`/pic` `/unlock` `/debug`',
   { parse_mode: 'Markdown' }
 ));
 
+bot.command('unlock', (ctx) => {
+  isDrawing = false;
+  ctx.reply('🔓 Unlocked');
+});
+
 bot.command('pic', async (ctx) => {
   if (!checkReady(ctx)) return;
+  isDrawing = false;
   try { await sendPic(ctx); } catch(e) { ctx.reply('❌ ' + e.message); }
+});
+
+bot.command('debug', async (ctx) => {
+  if (!checkReady(ctx)) return;
+  try {
+    const info = await page.evaluate(() => {
+      const c = document.querySelector('canvas.main-canvas') || document.querySelector('canvas');
+      if (!c) return { error: 'no canvas' };
+      const r = c.getBoundingClientRect();
+      return {
+        title: document.title,
+        url: window.location.href.substring(0, 80),
+        canvas: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) },
+        viewport: { w: window.innerWidth, h: window.innerHeight }
+      };
+    });
+    ctx.reply('🔍 Debug:\n' + JSON.stringify(info, null, 2));
+  } catch(e) { ctx.reply('❌ ' + e.message); }
 });
 
 bot.command('line', async (ctx) => {
@@ -148,22 +176,28 @@ bot.command('line', async (ctx) => {
 
 bot.command('circle', async (ctx) => {
   if (!checkReady(ctx)) return;
-  const args = ctx.message.text.split(' ').slice(1).map(Number);
-  if (args.length < 3) return ctx.reply('Usage: /circle cx cy r\nCoords: 0-1000');
+  const parts = ctx.message.text.split(' ').slice(1);
+  const colorArg = parts.find(p => p.startsWith('#'));
+  const nums = parts.filter(p => !p.startsWith('#')).map(Number).filter(n => !isNaN(n));
+  if (nums.length < 3) return ctx.reply('Usage: /circle cx cy r [#color]\nCoords: 0-1000');
   await ctx.reply('⏳ Drawing...');
   withLock(ctx, async () => {
-    await drawCircle(page, args[0], args[1], args[2]);
+    if (colorArg) await setColor(page, colorArg);
+    await drawCircle(page, nums[0], nums[1], nums[2]);
     await sendPic(ctx);
   });
 });
 
 bot.command('rect', async (ctx) => {
   if (!checkReady(ctx)) return;
-  const args = ctx.message.text.split(' ').slice(1).map(Number);
-  if (args.length < 4) return ctx.reply('Usage: /rect x1 y1 x2 y2\nCoords: 0-1000');
+  const parts = ctx.message.text.split(' ').slice(1);
+  const colorArg = parts.find(p => p.startsWith('#'));
+  const nums = parts.filter(p => !p.startsWith('#')).map(Number).filter(n => !isNaN(n));
+  if (nums.length < 4) return ctx.reply('Usage: /rect x1 y1 x2 y2 [#color]\nCoords: 0-1000');
   await ctx.reply('⏳ Drawing...');
   withLock(ctx, async () => {
-    await drawRect(page, args[0], args[1], args[2], args[3]);
+    if (colorArg) await setColor(page, colorArg);
+    await drawRect(page, nums[0], nums[1], nums[2], nums[3]);
     await sendPic(ctx);
   });
 });
@@ -177,18 +211,7 @@ bot.command('color', async (ctx) => {
     ctx.reply('✅ Color set to ' + hex);
   } catch(e) { ctx.reply('❌ ' + e.message); }
 });
-bot.command('brush', async (ctx) => {
-  if (!checkReady(ctx)) return;
-  const name = ctx.message.text.split(' ').slice(1).join(' ').trim();
-  if (!name) return ctx.reply(
-    'Usage: /brush <name>\nAvailable: Flowing Watercolor, Flat brush, Quill, Ink, Pencil, Watercolor (texture), Rembrandt'
-  );
-  try {
-    const { selectBrushType } = require('./drawer');
-    await selectBrushType(page, name);
-    ctx.reply('✅ Brush set to ' + name);
-  } catch(e) { ctx.reply('❌ ' + e.message); }
-});
+
 bot.command('size', async (ctx) => {
   if (!checkReady(ctx)) return;
   const px = Number(ctx.message.text.split(' ')[1]);
@@ -196,6 +219,18 @@ bot.command('size', async (ctx) => {
   try {
     await setBrushSize(page, px);
     ctx.reply('✅ Size set to ' + px + 'px');
+  } catch(e) { ctx.reply('❌ ' + e.message); }
+});
+
+bot.command('brush', async (ctx) => {
+  if (!checkReady(ctx)) return;
+  const name = ctx.message.text.split(' ').slice(1).join(' ').trim();
+  if (!name) return ctx.reply(
+    'Usage: /brush <name>\nAvailable: Flowing Watercolor, Flat brush, Quill, Ink, Pencil, Watercolor (texture), Rembrandt'
+  );
+  try {
+    await selectBrushType(page, name);
+    ctx.reply('✅ Brush set to ' + name);
   } catch(e) { ctx.reply('❌ ' + e.message); }
 });
 
@@ -258,12 +293,10 @@ bot.catch((err, ctx) => {
   ctx.reply('❌ ' + err.message);
 });
 
-// ── HTTP keep-alive ───────────────────────────────────────────────────────────
 http.createServer((req, res) => res.end('Parasite Bot 🦠')).listen(PORT, () => {
   console.log(`🌐 HTTP server on :${PORT}`);
 });
 
-// ── Start bot ─────────────────────────────────────────────────────────────────
 bot.launch()
   .then(() => console.log('✅ Bot started!'))
   .catch(err => console.error('❌ Bot failed:', err.message));
