@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>Parasite Canvas 🦠</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #1a1a2e;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      overflow: hidden;
+      font-family: sans-serif;
+    }
+    #status {
+      color: #aaa;
+      font-size: 12px;
+      padding: 4px 10px;
+      background: #0d0d1a;
+      border-radius: 20px;
+      margin-bottom: 8px;
+      transition: all 0.3s;
+    }
+    #status.connected { color: #4caf50; }
+    #status.drawing { color: #ff9800; }
+    #canvas-wrap {
+      position: relative;
+      box-shadow: 0 4px 30px rgba(0,0,0,0.5);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    canvas { display: block; touch-action: none; }
+    #main-canvas { background: #ffffff; }
+    #temp-canvas { position: absolute; top: 0; left: 0; pointer-events: none; }
+    #info { color: #555; font-size: 11px; margin-top: 6px; }
+  </style>
+</head>
+<body>
+  <div id="status">⏳ Connecting...</div>
+  <div id="canvas-wrap">
+    <canvas id="main-canvas"></canvas>
+    <canvas id="temp-canvas"></canvas>
+  </div>
+  <div id="info">🦠 Parasite Canvas</div>
+
+  <script>
+    const WS_URL = window.location.origin.replace(/^http/, 'ws') + '/ws';
+    const STATUS = document.getElementById('status');
+    const INFO = document.getElementById('info');
+
+    const wrap = document.getElementById('canvas-wrap');
+    const main = document.getElementById('main-canvas');
+    const temp = document.getElementById('temp-canvas');
+    const mctx = main.getContext('2d');
+    const tctx = temp.getContext('2d');
+
+    const CANVAS_W = 1016;
+    const CANVAS_H = 1200;
+
+    function resize() {
+      const maxW = Math.min(window.innerWidth - 20, 500);
+      const maxH = window.innerHeight - 80;
+      const scale = Math.min(maxW / CANVAS_W, maxH / CANVAS_H);
+      const w = Math.round(CANVAS_W * scale);
+      const h = Math.round(CANVAS_H * scale);
+      wrap.style.width = w + 'px';
+      wrap.style.height = h + 'px';
+      main.style.width = temp.style.width = w + 'px';
+      main.style.height = temp.style.height = h + 'px';
+    }
+
+    main.width = temp.width = CANVAS_W;
+    main.height = temp.height = CANVAS_H;
+    mctx.fillStyle = '#ffffff';
+    mctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+    resize();
+    window.addEventListener('resize', resize);
+
+    let color = '#000000';
+    let size = 10;
+
+    function applyStroke(ctx, points, c, s) {
+      if (!points || points.length < 2) return;
+      ctx.strokeStyle = c || color;
+      ctx.lineWidth = s || size;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      ctx.moveTo(points[0].x, points[0].y);
+      for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
+      ctx.stroke();
+    }
+
+    let ws, reconnectTimer;
+
+    function connect() {
+      ws = new WebSocket(WS_URL);
+      ws.onopen = () => { STATUS.textContent = '🟢 Connected'; STATUS.className = 'connected'; clearTimeout(reconnectTimer); };
+      ws.onclose = () => { STATUS.textContent = '🔴 Disconnected'; STATUS.className = ''; reconnectTimer = setTimeout(connect, 2000); };
+      ws.onerror = () => { STATUS.textContent = '🔴 Error'; STATUS.className = ''; };
+      ws.onmessage = (e) => {
+        let msg;
+        try { msg = JSON.parse(e.data); } catch { return; }
+        handleCommand(msg);
+      };
+    }
+
+    function handleCommand(cmd) {
+      switch (cmd.type) {
+        case 'color':
+          color = cmd.hex;
+          INFO.textContent = '🎨 Color: ' + cmd.hex;
+          break;
+        case 'size':
+          size = cmd.px;
+          INFO.textContent = '🖌 Size: ' + cmd.px + 'px';
+          break;
+        case 'stroke':
+        case 'stroke_end':
+          STATUS.textContent = '✏️ Drawing...';
+          STATUS.className = 'drawing';
+          applyStroke(mctx, cmd.points, cmd.color, cmd.size);
+          setTimeout(() => { STATUS.textContent = '🟢 Connected'; STATUS.className = 'connected'; }, 300);
+          break;
+        case 'stroke_progress':
+          tctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
+          applyStroke(tctx, cmd.points, cmd.color, cmd.size);
+          break;
+        case 'clear':
+          mctx.fillStyle = '#ffffff';
+          mctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+          tctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
+          INFO.textContent = '🗑 Canvas cleared';
+          break;
+        case 'init':
+          mctx.fillStyle = '#ffffff';
+          mctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+          if (cmd.strokes) {
+            for (const s of cmd.strokes) applyStroke(mctx, s.points, s.color, s.size);
+          }
+          color = cmd.color || '#000000';
+          size = cmd.size || 10;
+          INFO.textContent = '🦠 Canvas loaded (' + (cmd.strokes ? cmd.strokes.length : 0) + ' strokes)';
+          break;
+      }
+    }
+
+    connect();
+  </script>
+</body>
+</html>
