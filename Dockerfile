@@ -39,4 +39,4 @@ RUN npm install
 COPY . .
 
 # Start the bot
-CMD ["node", "bot.js"]
+CMD ["node", "main.js"]
