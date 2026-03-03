@@ -177,7 +177,18 @@ bot.command('color', async (ctx) => {
     ctx.reply('✅ Color set to ' + hex);
   } catch(e) { ctx.reply('❌ ' + e.message); }
 });
-
+bot.command('brush', async (ctx) => {
+  if (!checkReady(ctx)) return;
+  const name = ctx.message.text.split(' ').slice(1).join(' ').trim();
+  if (!name) return ctx.reply(
+    'Usage: /brush <name>\nAvailable: Flowing Watercolor, Flat brush, Quill, Ink, Pencil, Watercolor (texture), Rembrandt'
+  );
+  try {
+    const { selectBrushType } = require('./drawer');
+    await selectBrushType(page, name);
+    ctx.reply('✅ Brush set to ' + name);
+  } catch(e) { ctx.reply('❌ ' + e.message); }
+});
 bot.command('size', async (ctx) => {
   if (!checkReady(ctx)) return;
   const px = Number(ctx.message.text.split(' ')[1]);
