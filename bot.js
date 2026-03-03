@@ -66,7 +66,7 @@ No markdown, no explanation, only JSON.`;
   ];
 
   const res = await groq.chat.completions.create({
-    model: imageBase64 ? 'llama-3.2-11b-vision-preview' : 'llama-3.3-70b-versatile',
+    model: imageBase64 ? 'meta-llama/llama-4-scout-17b-16e-instruct' : 'llama-3.3-70b-versatile',
     max_tokens: 8000,
     messages
   });
@@ -372,3 +372,4 @@ bot.launch()
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
+
