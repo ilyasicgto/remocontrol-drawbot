@@ -50,6 +50,15 @@ async function initBrowser(url) {
   catch(e) { await page.waitForSelector('canvas', { timeout: 15000 }); }
   await sleep(3000);
   isReady = true;
+// Pre-focus canvas and select brush tool
+  await page.mouse.click(517, 709);
+  await sleep(300);
+  await page.keyboard.press('Escape');
+  await sleep(200);
+  await page.evaluate(() => {
+    const c = document.querySelector('canvas.main-canvas');
+    if (c) c.focus();
+  });
   console.log('✅ Browser ready!');
 }
 
