@@ -1,7 +1,8 @@
 /**
  * main.js — Parasite Bot
  * Flow: Your Mini App (canvas.html) → WebSocket → Puppeteer → real doodle.gator game
- * Env vars: BOT_TOKEN, DOODLE_URL, GROQ_API_KEY, PORT
+ * Env vars: BOT_TOKEN, GROQ_API_KEY, PORT
+ * Usage: /seturl <doodle url> — loads the game in puppeteer
  */
 
 const http = require('http');
@@ -16,7 +17,6 @@ const drawer = require('./drawer');
 const { generateDrawingCommands } = require('./ai');
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const DOODLE_URL = process.env.DOODLE_URL;
 const PORT = process.env.PORT || 3000;
 if (!BOT_TOKEN) { console.error('BOT_TOKEN missing'); process.exit(1); }
 
@@ -27,24 +27,23 @@ let browser, page;
 let isDrawing = false;
 let clients = new Set();
 
-// ── Launch puppeteer and open doodle.gator ────────────────────────────────────
-async function launchBrowser() {
-  browser = await puppeteer.launch({
-    headless: 'new',
-    args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage','--disable-gpu','--window-size=1280,900'],
-  });
+// ── Load a doodle URL into puppeteer ─────────────────────────────────────────
+async function loadURL(url) {
+  if (!browser) {
+    browser = await puppeteer.launch({
+      headless: 'new',
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+      args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage','--disable-gpu','--window-size=1280,900'],
+    });
+  }
+  if (page) await page.close().catch(() => {});
   page = await browser.newPage();
   await page.setViewport({ width: 1280, height: 900 });
-  if (DOODLE_URL) {
-    console.log('Loading:', DOODLE_URL);
-    await page.goto(DOODLE_URL, { waitUntil: 'networkidle2', timeout: 30000 });
-    await page.waitForSelector('.main-canvas', { timeout: 15000 });
-    console.log('Canvas ready!');
-  } else {
-    console.warn('No DOODLE_URL set in env vars');
-  }
+  console.log('Loading:', url);
+  await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+  await page.waitForSelector('.main-canvas', { timeout: 15000 });
+  console.log('Canvas ready!');
 }
-launchBrowser().catch(e => console.error('Browser failed:', e.message));
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function withLock(ctx, fn) {
@@ -55,7 +54,7 @@ function withLock(ctx, fn) {
 }
 
 function requirePage(ctx) {
-  if (!page) { ctx.reply('❌ Browser not ready'); return false; }
+  if (!page) { ctx.reply('❌ No game loaded. Send /seturl <url> first'); return false; }
   return true;
 }
 
@@ -109,7 +108,7 @@ async function runAIImage(base64, caption) {
   return parsed.commands || parsed;
 }
 
-// ── HTTP server — serves canvas.html to Mini App users ────────────────────────
+// ── HTTP server — serves canvas.html ─────────────────────────────────────────
 const server = http.createServer((req, res) => {
   if (req.url === '/' || req.url === '/index.html') {
     fs.readFile(path.join(__dirname, 'canvas.html'), (err, data) => {
@@ -122,7 +121,7 @@ const server = http.createServer((req, res) => {
   }
 });
 
-// ── WebSocket — receives strokes from Mini App → mirrors to puppeteer ─────────
+// ── WebSocket — Mini App strokes → puppeteer ──────────────────────────────────
 const wss = new WebSocket.Server({ server, path: '/ws' });
 wss.on('connection', ws => {
   clients.add(ws);
@@ -136,25 +135,18 @@ wss.on('connection', ws => {
 
       if (m.type === 'user_stroke' && !isDrawing)
         await drawer.drawStroke(page, m.points);
-
       if (m.type === 'color')
         await drawer.setColor(page, m.hex);
-
       if (m.type === 'size')
         await drawer.setBrushSize(page, Math.min(100, m.px));
-
       if (m.type === 'brush')
         await drawer.setBrush(page, m.name);
-
       if (m.type === 'undo' && !isDrawing)
         await drawer.undo(page);
-
       if (m.type === 'redo' && !isDrawing)
         await drawer.redo(page);
-
       if (m.type === 'clear' && !isDrawing)
         await drawer.clearCanvas(page);
-
       if (m.type === 'fill' && !isDrawing) {
         await drawer.click(page, drawer.TOOLS.fill.x, drawer.TOOLS.fill.y);
         await drawer.sleep(50);
@@ -184,15 +176,37 @@ bot.command('start', ctx => {
   const url = process.env.RAILWAY_PUBLIC_DOMAIN
     ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : 'your-railway-url';
   ctx.reply(
-    '🦠 *Parasite Bot*\n\n🖼 Canvas: ' + url + '\n\n' +
+    '🦠 *Parasite Bot*\n\n' +
+    '1️⃣ Send the game URL: `/seturl https://doodle.gator...`\n' +
+    '2️⃣ Open canvas: ' + url + '\n\n' +
     '`/line x1 y1 x2 y2 [#color] [size]`\n' +
     '`/circle cx cy r [#color]`\n' +
     '`/rect x1 y1 x2 y2 [#color]`\n' +
     '`/color #hex` `/size 1-100` `/brush name`\n' +
     '`/undo` `/redo` `/clear`\n' +
     '`/ai description` or send 📸 photo\n' +
-    '`/brushes` `/clients` `/unlock`',
+    '`/brushes` `/clients` `/unlock` `/status`',
     { parse_mode: 'Markdown' }
+  );
+});
+
+bot.command('seturl', async ctx => {
+  const url = ctx.message.text.replace('/seturl', '').trim();
+  if (!url || !url.startsWith('http')) return ctx.reply('Usage: /seturl https://doodle.gator.top/draw/?...');
+  await ctx.reply('⏳ Loading game...');
+  try {
+    await loadURL(url);
+    ctx.reply('✅ Canvas ready! Start drawing.');
+  } catch (e) {
+    ctx.reply('❌ Failed: ' + e.message);
+  }
+});
+
+bot.command('status', ctx => {
+  ctx.reply(
+    `🤖 Puppeteer: ${page ? '✅ ready' : '❌ not loaded (use /seturl)'}\n` +
+    `👁 Mini App viewers: ${clients.size}\n` +
+    `🔒 Drawing lock: ${isDrawing ? 'locked' : 'free'}`
   );
 });
 
