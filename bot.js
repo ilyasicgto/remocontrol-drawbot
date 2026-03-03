@@ -42,14 +42,14 @@ function broadcast(data) {
 
 // ─── AI call (Groq — text or vision) ─────────────────────────────────────────
 async function callAI(prompt, imageBase64 = null, mimeType = 'image/jpeg') {
-  const systemPrompt = `You are a drawing bot controller. Output ONLY a JSON array of drawing commands.
+  const systemPrompt = `You are a drawing bot controller. Output ONLY a JSON object with a single key "commands" containing an array of drawing commands.
 Types:
 - {"type":"draw_direct","x1":n,"y1":n,"x2":n,"y2":n,"color":"#hex","width":n}
 - {"type":"circle","x":n,"y":n,"r":n,"color":"#hex","fill":bool,"width":n}
 - {"type":"path","points":[[x,y],...],"color":"#hex","width":n}
-Canvas is 1016x1200. Use maximum 80 commands total. Keep it simple.
+Canvas is 1016x1200. Use maximum 60 commands total. Keep it simple.
 For images: trace ONLY the most important outlines, no details.
-Output ONLY a valid complete JSON array. Must be complete and not cut off.
+Output ONLY valid complete JSON. Must not be cut off.
 No markdown, no explanation, only JSON.`;
 
   const messages = [
@@ -65,18 +65,19 @@ No markdown, no explanation, only JSON.`;
     }
   ];
 
+  const isVision = !!imageBase64;
   const res = await groq.chat.completions.create({
-    model: imageBase64 ? 'meta-llama/llama-4-scout-17b-16e-instruct' : 'llama-3.3-70b-versatile',
+    model: isVision ? 'meta-llama/llama-4-scout-17b-16e-instruct' : 'llama-3.3-70b-versatile',
     max_tokens: 8000,
+    ...(isVision ? {} : { response_format: { type: 'json_object' } }),
     messages
   });
 
   const raw = res.choices[0].message.content.trim();
-  console.log('AI response:', raw.slice(0, 500));
+  console.log('AI response:', raw.slice(0, 300));
   const text = raw.replace(/```json|```/g, '').trim();
-  const match = text.match(/\[[\s\S]*\]/);
-  if (!match) throw new Error('No JSON array found in response');
-  return JSON.parse(match[0]);
+  const parsed = JSON.parse(text);
+  return parsed.commands || parsed;
 }
 
 // ─── Download Telegram file as base64 ────────────────────────────────────────
@@ -372,4 +373,3 @@ bot.launch()
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
-
