@@ -1,156 +1,178 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-  <title>Parasite Canvas 🦠</title>
-  <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-      background: #1a1a2e;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      height: 100vh;
-      overflow: hidden;
-      font-family: sans-serif;
-    }
-    #status {
-      color: #aaa;
-      font-size: 12px;
-      padding: 4px 10px;
-      background: #0d0d1a;
-      border-radius: 20px;
-      margin-bottom: 8px;
-      transition: all 0.3s;
-    }
-    #status.connected { color: #4caf50; }
-    #status.drawing { color: #ff9800; }
-    #canvas-wrap {
-      position: relative;
-      box-shadow: 0 4px 30px rgba(0,0,0,0.5);
-      border-radius: 4px;
-      overflow: hidden;
-    }
-    canvas { display: block; touch-action: none; }
-    #main-canvas { background: #ffffff; }
-    #temp-canvas { position: absolute; top: 0; left: 0; pointer-events: none; }
-    #info { color: #555; font-size: 11px; margin-top: 6px; }
-  </style>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+<title>Doodle</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;background:#1a1a2e;overflow:hidden;font-family:sans-serif}
+#toolbar{display:flex;align-items:center;gap:8px;padding:8px 12px;background:#16213e;border-bottom:1px solid #0f3460}
+#colorBtn{width:30px;height:30px;border-radius:50%;border:3px solid #fff;cursor:pointer;background:#1a1a1a}
+#sizeLabel{color:#eee;font-size:13px;min-width:40px}
+#viewers{margin-left:auto;color:#aaa;font-size:12px}
+#status{position:fixed;top:50px;left:50%;transform:translateX(-50%);background:#0f3460cc;color:#eee;padding:4px 12px;border-radius:20px;font-size:12px;pointer-events:none;transition:opacity .5s}
+#status.hidden{opacity:0}
+canvas{display:block;touch-action:none}
+</style>
 </head>
 <body>
-  <div id="status">⏳ Connecting...</div>
-  <div id="canvas-wrap">
-    <canvas id="main-canvas"></canvas>
-    <canvas id="temp-canvas"></canvas>
-  </div>
-  <div id="info">🦠 Parasite Canvas</div>
+<div id="toolbar">
+  <div id="colorBtn"></div>
+  <span id="sizeLabel">10px</span>
+  <span id="viewers">👁 0</span>
+</div>
+<div id="status" class="hidden"></div>
+<canvas id="c"></canvas>
 
-  <script>
-    const WS_URL = window.location.origin.replace(/^http/, 'ws') + '/ws';
-    const STATUS = document.getElementById('status');
-    const INFO = document.getElementById('info');
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const colorBtn = document.getElementById('colorBtn');
+const sizeLabel = document.getElementById('sizeLabel');
+const viewersEl = document.getElementById('viewers');
+const statusEl = document.getElementById('status');
 
-    const wrap = document.getElementById('canvas-wrap');
-    const main = document.getElementById('main-canvas');
-    const temp = document.getElementById('temp-canvas');
-    const mctx = main.getContext('2d');
-    const tctx = temp.getContext('2d');
+let W, H;
+function resize() {
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight - 50;
+  redraw();
+}
+window.addEventListener('resize', resize);
 
-    const CANVAS_W = 1016;
-    const CANVAS_H = 1200;
+// State
+let strokes = [];
+let currentColor = '#1a1a1a';
+let currentSize = 10;
+let drawing = false;
+let pts = [];
 
-    function resize() {
-      const maxW = Math.min(window.innerWidth - 20, 500);
-      const maxH = window.innerHeight - 80;
-      const scale = Math.min(maxW / CANVAS_W, maxH / CANVAS_H);
-      const w = Math.round(CANVAS_W * scale);
-      const h = Math.round(CANVAS_H * scale);
-      wrap.style.width = w + 'px';
-      wrap.style.height = h + 'px';
-      main.style.width = temp.style.width = w + 'px';
-      main.style.height = temp.style.height = h + 'px';
+colorBtn.style.background = currentColor;
+
+function showStatus(msg) {
+  statusEl.textContent = msg;
+  statusEl.classList.remove('hidden');
+  clearTimeout(statusEl._t);
+  statusEl._t = setTimeout(() => statusEl.classList.add('hidden'), 2000);
+}
+
+// Drawing
+function drawStroke(s) {
+  if (!s.points || s.points.length < 2) return;
+  ctx.beginPath();
+  ctx.strokeStyle = s.color;
+  ctx.lineWidth = s.size;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.moveTo(s.points[0].x * W / 1000, s.points[0].y * H / 1000);
+  for (let i = 1; i < s.points.length; i++)
+    ctx.lineTo(s.points[i].x * W / 1000, s.points[i].y * H / 1000);
+  ctx.stroke();
+}
+
+function redraw() {
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, W, H);
+  for (const s of strokes) drawStroke(s);
+}
+
+// User drawing (sends to server)
+function toCoord(e) {
+  const r = canvas.getBoundingClientRect();
+  const src = e.touches ? e.touches[0] : e;
+  return {
+    x: Math.round((src.clientX - r.left) / W * 1000),
+    y: Math.round((src.clientY - r.top) / H * 1000)
+  };
+}
+
+canvas.addEventListener('mousedown', e => { drawing = true; pts = [toCoord(e)]; });
+canvas.addEventListener('mousemove', e => {
+  if (!drawing) return;
+  pts.push(toCoord(e));
+  // live preview
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, W, H);
+  for (const s of strokes) drawStroke(s);
+  drawStroke({ color: currentColor, size: currentSize, points: pts });
+});
+canvas.addEventListener('mouseup', finishStroke);
+canvas.addEventListener('touchstart', e => { e.preventDefault(); drawing = true; pts = [toCoord(e)]; });
+canvas.addEventListener('touchmove', e => { e.preventDefault(); if (!drawing) return; pts.push(toCoord(e)); ctx.clearRect(0,0,W,H); ctx.fillStyle='#fff'; ctx.fillRect(0,0,W,H); for(const s of strokes) drawStroke(s); drawStroke({color:currentColor,size:currentSize,points:pts}); });
+canvas.addEventListener('touchend', finishStroke);
+
+function finishStroke() {
+  if (!drawing || pts.length < 2) { drawing = false; return; }
+  drawing = false;
+  const s = { color: currentColor, size: currentSize, points: pts };
+  strokes.push(s);
+  redraw();
+  if (ws && ws.readyState === WebSocket.OPEN)
+    ws.send(JSON.stringify({ type: 'user_stroke', ...s }));
+  pts = [];
+}
+
+// WebSocket
+let ws, reconnectTimer;
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+
+  ws.onopen = () => { showStatus('🟢 Connected'); };
+
+  ws.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    switch (m.type) {
+      case 'init':
+        strokes = m.strokes || [];
+        currentColor = m.color || '#1a1a1a';
+        currentSize = m.size || 10;
+        colorBtn.style.background = currentColor;
+        sizeLabel.textContent = currentSize + 'px';
+        viewersEl.textContent = '👁 ' + (m.viewers || 0);
+        redraw();
+        break;
+      case 'stroke_end':
+        strokes.push({ color: m.color, size: m.size, points: m.points });
+        drawStroke({ color: m.color, size: m.size, points: m.points });
+        break;
+      case 'clear':
+        strokes = [];
+        redraw();
+        showStatus('🗑 Canvas cleared');
+        break;
+      case 'color':
+        currentColor = m.hex;
+        colorBtn.style.background = m.hex;
+        showStatus('🎨 Color: ' + m.hex);
+        break;
+      case 'size':
+        currentSize = m.px;
+        sizeLabel.textContent = m.px + 'px';
+        showStatus('📏 Size: ' + m.px + 'px');
+        break;
+      case 'undo':
+        strokes = m.strokes || [];
+        redraw();
+        showStatus('↩️ Undone');
+        break;
+      case 'viewers':
+        viewersEl.textContent = '👁 ' + m.count;
+        break;
     }
+  };
 
-    main.width = temp.width = CANVAS_W;
-    main.height = temp.height = CANVAS_H;
-    mctx.fillStyle = '#ffffff';
-    mctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
-    resize();
-    window.addEventListener('resize', resize);
+  ws.onclose = () => {
+    showStatus('🔴 Disconnected, reconnecting...');
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(connect, 3000);
+  };
+}
 
-    let color = '#000000';
-    let size = 10;
-
-    function applyStroke(ctx, points, c, s) {
-      if (!points || points.length < 2) return;
-      ctx.strokeStyle = c || color;
-      ctx.lineWidth = s || size;
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      ctx.beginPath();
-      ctx.moveTo(points[0].x, points[0].y);
-      for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
-      ctx.stroke();
-    }
-
-    let ws, reconnectTimer;
-
-    function connect() {
-      ws = new WebSocket(WS_URL);
-      ws.onopen = () => { STATUS.textContent = '🟢 Connected'; STATUS.className = 'connected'; clearTimeout(reconnectTimer); };
-      ws.onclose = () => { STATUS.textContent = '🔴 Disconnected'; STATUS.className = ''; reconnectTimer = setTimeout(connect, 2000); };
-      ws.onerror = () => { STATUS.textContent = '🔴 Error'; STATUS.className = ''; };
-      ws.onmessage = (e) => {
-        let msg;
-        try { msg = JSON.parse(e.data); } catch { return; }
-        handleCommand(msg);
-      };
-    }
-
-    function handleCommand(cmd) {
-      switch (cmd.type) {
-        case 'color':
-          color = cmd.hex;
-          INFO.textContent = '🎨 Color: ' + cmd.hex;
-          break;
-        case 'size':
-          size = cmd.px;
-          INFO.textContent = '🖌 Size: ' + cmd.px + 'px';
-          break;
-        case 'stroke':
-        case 'stroke_end':
-          STATUS.textContent = '✏️ Drawing...';
-          STATUS.className = 'drawing';
-          applyStroke(mctx, cmd.points, cmd.color, cmd.size);
-          setTimeout(() => { STATUS.textContent = '🟢 Connected'; STATUS.className = 'connected'; }, 300);
-          break;
-        case 'stroke_progress':
-          tctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
-          applyStroke(tctx, cmd.points, cmd.color, cmd.size);
-          break;
-        case 'clear':
-          mctx.fillStyle = '#ffffff';
-          mctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
-          tctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
-          INFO.textContent = '🗑 Canvas cleared';
-          break;
-        case 'init':
-          mctx.fillStyle = '#ffffff';
-          mctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
-          if (cmd.strokes) {
-            for (const s of cmd.strokes) applyStroke(mctx, s.points, s.color, s.size);
-          }
-          color = cmd.color || '#000000';
-          size = cmd.size || 10;
-          INFO.textContent = '🦠 Canvas loaded (' + (cmd.strokes ? cmd.strokes.length : 0) + ' strokes)';
-          break;
-      }
-    }
-
-    connect();
-  </script>
+resize();
+connect();
+</script>
 </body>
 </html>
