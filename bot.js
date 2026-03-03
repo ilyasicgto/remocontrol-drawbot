@@ -4,11 +4,13 @@ const sharp = require('sharp');
 const WebSocket = require('ws');
 const http = require('http');
 const https = require('https');
+const Groq = require('groq-sdk');
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 if (!BOT_TOKEN) { console.log('❌ BOT_TOKEN missing!'); process.exit(1); }
 
 const bot = new Telegraf(BOT_TOKEN);
+const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 let browser = null, page = null, isReady = false;
 let wsClients = new Set(), screenshotCache = null, canvasDirty = false;
@@ -38,7 +40,7 @@ function broadcast(data) {
     if (ws.readyState === WebSocket.OPEN) ws.send(payload);
 }
 
-// ─── OpenRouter AI call (text or image) ──────────────────────────────────────
+// ─── AI call (Groq — text or vision) ─────────────────────────────────────────
 async function callAI(prompt, imageBase64 = null, mimeType = 'image/jpeg') {
   const systemPrompt = `You are a drawing bot controller. Output ONLY a JSON array of drawing commands.
 Types:
@@ -47,35 +49,29 @@ Types:
 - {"type":"path","points":[[x,y],...],"color":"#hex","width":n}
 Canvas is 1016x1200. Use maximum 80 commands total. Keep it simple.
 For images: trace ONLY the most important outlines, no details.
-Output ONLY a valid complete JSON array. It must be complete and not cut off.
+Output ONLY a valid complete JSON array. Must be complete and not cut off.
 No markdown, no explanation, only JSON.`;
 
-  const messages = [{
-    role: 'user',
-    content: imageBase64
-      ? [
-          { type: 'text', text: systemPrompt + '\n\n' + prompt },
-          { type: 'image_url', image_url: { url: `data:${mimeType};base64,${imageBase64}` } }
-        ]
-      : [{ type: 'text', text: systemPrompt + '\n\n' + prompt }]
-  }];
+  const messages = [
+    { role: 'system', content: systemPrompt },
+    {
+      role: 'user',
+      content: imageBase64
+        ? [
+            { type: 'text', text: prompt },
+            { type: 'image_url', image_url: { url: `data:${mimeType};base64,${imageBase64}` } }
+          ]
+        : prompt
+    }
+  ];
 
-  const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      model: 'openrouter/auto',
-      messages,
-      max_tokens: 8000
-    })
+  const res = await groq.chat.completions.create({
+    model: imageBase64 ? 'llama-3.2-11b-vision-preview' : 'llama-3.3-70b-versatile',
+    max_tokens: 8000,
+    messages
   });
 
-  const data = await res.json();
-  if (data.error) throw new Error(data.error.message);
-  const raw = data.choices[0].message.content.trim();
+  const raw = res.choices[0].message.content.trim();
   console.log('AI response:', raw.slice(0, 500));
   const text = raw.replace(/```json|```/g, '').trim();
   const match = text.match(/\[[\s\S]*\]/);
@@ -305,7 +301,7 @@ bot.command('pic', async (ctx) => {
 
 bot.command('ai', async (ctx) => {
   if (!isReady) return ctx.reply('❌ No host attached');
-  if (!process.env.OPENROUTER_API_KEY) return ctx.reply('❌ OPENROUTER_API_KEY missing');
+  if (!process.env.GROQ_API_KEY) return ctx.reply('❌ GROQ_API_KEY missing');
   const prompt = ctx.message.text.replace('/ai', '').trim();
   if (!prompt) return ctx.reply('Usage: /ai draw a cat');
   try {
@@ -341,12 +337,12 @@ bot.command('debug', async (ctx) => {
 // ─── Photo handler ────────────────────────────────────────────────────────────
 bot.on('photo', async (ctx) => {
   if (!isReady) return ctx.reply('❌ No host attached first');
-  if (!process.env.OPENROUTER_API_KEY) return ctx.reply('❌ OPENROUTER_API_KEY missing');
+  if (!process.env.GROQ_API_KEY) return ctx.reply('❌ GROQ_API_KEY missing');
   try {
     await ctx.reply('📸 Analyzing image...');
     const fileId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
     const base64 = await getTelegramFileBase64(ctx, fileId);
-    const caption = ctx.message.caption || 'Redraw this image as line art on the canvas. Trace all main outlines and details.';
+    const caption = ctx.message.caption || 'Redraw this image as line art. Trace all main outlines and important features.';
     const commands = await callAI(caption, base64, 'image/jpeg');
     await ctx.reply(`✅ Got ${commands.length} commands, drawing now...`);
     await executeCommands(commands);
@@ -376,9 +372,3 @@ bot.launch()
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
-
-
-
-
-
-
