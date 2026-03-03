@@ -11,8 +11,8 @@ const Groq = require('groq-sdk');
 
 const {
   drawLine, drawCircle, drawRect, drawFreeStroke,
-  setColor, setBrushSize, undo, redo, clearCanvas,
-  screenshotCanvas, sleep,
+  setColor, setBrushSize, selectBrushType,
+  undo, redo, clearCanvas, screenshotCanvas, sleep,
 } = require('./drawer');
 const { generateDrawingCommands } = require('./ai');
 
