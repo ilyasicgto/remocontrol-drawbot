@@ -1,7 +1,6 @@
 const { Telegraf } = require('telegraf');
 const puppeteer = require('puppeteer');
 const sharp = require('sharp');
-const WebSocket = require('ws');
 const http = require('http');
 const https = require('https');
 const Groq = require('groq-sdk');
@@ -13,44 +12,82 @@ const bot = new Telegraf(BOT_TOKEN);
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 let browser = null, page = null, isReady = false;
-let wsClients = new Set(), screenshotCache = null, canvasDirty = false;
 
-// ─── WebSocket Server ─────────────────────────────────────────────────────────
-const server = http.createServer((req, res) => res.end('Parasite Bot 🦠'));
-const wss = new WebSocket.Server({ server });
+// ─── Keep alive ───────────────────────────────────────────────────────────────
+http.createServer((req, res) => res.end('Bot running')).listen(3000);
 
-wss.on('connection', (ws) => {
-  wsClients.add(ws);
-  console.log(`🔌 WS client connected (total: ${wsClients.size})`);
-  ws.on('message', async (raw) => {
-    try {
-      const msg = JSON.parse(raw);
-      await handleDrawCommand(msg);
-      ws.send(JSON.stringify({ ok: true, type: msg.type }));
-    } catch (e) { ws.send(JSON.stringify({ ok: false, error: e.message })); }
-  });
-  ws.on('close', () => { wsClients.delete(ws); });
-});
-
-server.listen(3000, () => console.log('🌐 HTTP+WS server on :3000'));
-
-function broadcast(data) {
-  const payload = JSON.stringify(data);
-  for (const ws of wsClients)
-    if (ws.readyState === WebSocket.OPEN) ws.send(payload);
+// ─── Browser init ─────────────────────────────────────────────────────────────
+async function initBrowser(url) {
+  try {
+    if (browser) await browser.close().catch(() => {});
+    browser = await puppeteer.launch({
+      headless: true,
+      args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage','--disable-gpu']
+    });
+    page = await browser.newPage();
+    await page.setViewport({ width: 1280, height: 800 });
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+    await new Promise(r => setTimeout(r, 5000));
+    await page.evaluate(() => {
+      window.parasite = {
+        drawLine(x1,y1,x2,y2,color='#000',width=2) {
+          const ctx = document.querySelector('.main-canvas').getContext('2d');
+          ctx.strokeStyle=color; ctx.lineWidth=width; ctx.lineCap='round';
+          ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+        },
+        drawCircle(x,y,r,color='#000',fill=false) {
+          const ctx = document.querySelector('.main-canvas').getContext('2d');
+          ctx.strokeStyle=color; ctx.fillStyle=color;
+          ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2);
+          if(fill) ctx.fill(); else ctx.stroke();
+        },
+        drawPath(points,color='#000',width=2) {
+          if(!points?.length) return;
+          const ctx = document.querySelector('.main-canvas').getContext('2d');
+          ctx.strokeStyle=color; ctx.lineWidth=width; ctx.lineCap='round'; ctx.lineJoin='round';
+          ctx.beginPath(); ctx.moveTo(points[0][0],points[0][1]);
+          for(let i=1;i<points.length;i++) ctx.lineTo(points[i][0],points[i][1]);
+          ctx.stroke();
+        }
+      };
+    });
+    isReady = true;
+    console.log('✅ Browser ready!');
+    return true;
+  } catch(e) {
+    console.error('❌ Browser failed:', e.message);
+    return false;
+  }
 }
 
-// ─── AI call (Groq — text or vision) ─────────────────────────────────────────
-async function callAI(prompt, imageBase64 = null, mimeType = 'image/jpeg') {
+// ─── Screenshot ───────────────────────────────────────────────────────────────
+async function getScreenshot() {
+  const png = await page.evaluate(() => {
+    const canvas = document.querySelector('.main-canvas');
+    const off = document.createElement('canvas');
+    off.width = canvas.width; off.height = canvas.height;
+    const ctx = off.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, off.width, off.height);
+    ctx.drawImage(canvas, 0, 0);
+    return off.toDataURL('image/png').split(',')[1];
+  });
+  const buf = Buffer.from(png, 'base64');
+  return await sharp(buf)
+    .resize({ width: 800, withoutEnlargement: true })
+    .jpeg({ quality: 75, mozjpeg: true })
+    .toBuffer();
+}
+
+// ─── AI Draw ──────────────────────────────────────────────────────────────────
+async function runAIDraw(ctx, prompt, imageBase64 = null, mimeType = 'image/jpeg') {
   const systemPrompt = `You are a drawing bot controller. Output ONLY a JSON object with a single key "commands" containing an array of drawing commands.
 Types:
 - {"type":"draw_direct","x1":n,"y1":n,"x2":n,"y2":n,"color":"#hex","width":n}
 - {"type":"circle","x":n,"y":n,"r":n,"color":"#hex","fill":bool,"width":n}
 - {"type":"path","points":[[x,y],...],"color":"#hex","width":n}
-Canvas is 1016x1200. Use maximum 60 commands total. Keep it simple.
-For images: trace ONLY the most important outlines, no details.
-Output ONLY valid complete JSON. Must not be cut off.
-No markdown, no explanation, only JSON.`;
+Canvas is 1016x1200. Use maximum 60 commands. Keep it simple.
+Output ONLY valid complete JSON. No markdown, no explanation.`;
 
   const messages = [
     { role: 'system', content: systemPrompt },
@@ -77,25 +114,11 @@ No markdown, no explanation, only JSON.`;
   console.log('AI response:', raw.slice(0, 300));
   const text = raw.replace(/```json|```/g, '').trim();
   const parsed = JSON.parse(text);
-  return parsed.commands || parsed;
-}
+  const commands = parsed.commands || parsed;
 
-// ─── Download Telegram file as base64 ────────────────────────────────────────
-async function getTelegramFileBase64(ctx, fileId) {
-  const file = await ctx.telegram.getFile(fileId);
-  const url = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`;
-  return new Promise((resolve, reject) => {
-    https.get(url, (res) => {
-      const chunks = [];
-      res.on('data', chunk => chunks.push(chunk));
-      res.on('end', () => resolve(Buffer.concat(chunks).toString('base64')));
-      res.on('error', reject);
-    });
-  });
-}
+  await ctx.reply(`✅ Got ${commands.length} commands, drawing now...`);
 
-// ─── Execute drawing commands on canvas ──────────────────────────────────────
-async function executeCommands(commands) {
+  // ALL commands in ONE evaluate = fast
   await page.evaluate((cmds) => {
     const canvas = document.querySelector('.main-canvas');
     const ctx = canvas.getContext('2d');
@@ -117,137 +140,23 @@ async function executeCommands(commands) {
       }
     }
   }, commands);
-  canvasDirty = true;
+
+  const jpg = await getScreenshot();
+  await ctx.replyWithPhoto({ source: jpg }, { caption: '🖼 Done!' });
 }
 
-// ─── Core draw handler ────────────────────────────────────────────────────────
-async function handleDrawCommand(cmd) {
-  if (!isReady) throw new Error('No host attached');
-
-  switch (cmd.type) {
-    case 'draw_direct': {
-      await page.evaluate((c) => {
-        const ctx = document.querySelector('.main-canvas').getContext('2d');
-        ctx.strokeStyle = c.color || '#000'; ctx.lineWidth = +c.width || 2;
-        ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-        ctx.beginPath(); ctx.moveTo(+c.x1, +c.y1); ctx.lineTo(+c.x2, +c.y2); ctx.stroke();
-      }, cmd); break;
-    }
-    case 'circle': {
-      await page.evaluate((c) => {
-        const ctx = document.querySelector('.main-canvas').getContext('2d');
-        ctx.strokeStyle = c.color || '#000'; ctx.fillStyle = c.color || '#000';
-        ctx.lineWidth = +c.width || 2;
-        ctx.beginPath(); ctx.arc(+c.x, +c.y, +c.r, 0, Math.PI * 2);
-        if (c.fill === true || c.fill === 'true') ctx.fill(); else ctx.stroke();
-      }, cmd); break;
-    }
-    case 'path': {
-      await page.evaluate((c) => {
-        if (!c.points?.length) return;
-        const ctx = document.querySelector('.main-canvas').getContext('2d');
-        ctx.strokeStyle = c.color || '#000'; ctx.lineWidth = +c.width || 2;
-        ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-        ctx.beginPath(); ctx.moveTo(c.points[0][0], c.points[0][1]);
-        for (let i = 1; i < c.points.length; i++) ctx.lineTo(c.points[i][0], c.points[i][1]);
-        ctx.stroke();
-      }, cmd); break;
-    }
-    case 'clear': {
-      await page.evaluate(() => {
-        ['main-canvas', 'temp-canvas', 'grid-canvas'].forEach(cls => {
-          const c = document.querySelector('.' + cls);
-          if (c) {
-            const ctx = c.getContext('2d');
-            ctx.clearRect(0, 0, c.width, c.height);
-            ctx.fillStyle = '#ffffff';
-            ctx.fillRect(0, 0, c.width, c.height);
-          }
-        });
-      }); break;
-    }
-    case 'undo': {
-      await page.keyboard.down('Control');
-      await page.keyboard.press('z');
-      await page.keyboard.up('Control');
-      break;
-    }
-    case 'redo': {
-      await page.keyboard.down('Control');
-      await page.keyboard.press('y');
-      await page.keyboard.up('Control');
-      break;
-    }
-    case 'drag': {
-      await page.mouse.move(+cmd.x1, +cmd.y1);
-      await page.mouse.down();
-      const steps = cmd.steps || 20;
-      for (let i = 1; i <= steps; i++) {
-        await page.mouse.move(
-          +cmd.x1 + ((+cmd.x2 - +cmd.x1) * i / steps),
-          +cmd.y1 + ((+cmd.y2 - +cmd.y1) * i / steps)
-        );
-      }
-      await page.mouse.up(); break;
-    }
-    case 'click': await page.mouse.click(+cmd.x, +cmd.y); break;
-    case 'eval':  await page.evaluate(new Function(cmd.code)); break;
-    default: throw new Error(`Unknown command: ${cmd.type}`);
-  }
-
-  canvasDirty = true;
-  broadcast({ ...cmd, _from: 'server' });
-}
-
-// ─── Screenshot ───────────────────────────────────────────────────────────────
-async function getScreenshot(forceRefresh = false) {
-  if (!canvasDirty && screenshotCache && !forceRefresh) return screenshotCache;
-  const png = await page.evaluate(() => {
-    const canvas = document.querySelector('.main-canvas');
-    const off = document.createElement('canvas');
-    off.width = canvas.width; off.height = canvas.height;
-    const ctx = off.getContext('2d');
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, off.width, off.height);
-    ctx.drawImage(canvas, 0, 0);
-    return off.toDataURL('image/png').split(',')[1];
+// ─── Download Telegram file as base64 ────────────────────────────────────────
+async function getTelegramFileBase64(ctx, fileId) {
+  const file = await ctx.telegram.getFile(fileId);
+  const url = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`;
+  return new Promise((resolve, reject) => {
+    https.get(url, (res) => {
+      const chunks = [];
+      res.on('data', chunk => chunks.push(chunk));
+      res.on('end', () => resolve(Buffer.concat(chunks).toString('base64')));
+      res.on('error', reject);
+    });
   });
-  const buf = Buffer.from(png, 'base64');
-  screenshotCache = await sharp(buf)
-    .resize({ width: 800, withoutEnlargement: true })
-    .jpeg({ quality: 75, mozjpeg: true })
-    .toBuffer();
-  canvasDirty = false;
-  return screenshotCache;
-}
-
-// ─── Browser init ─────────────────────────────────────────────────────────────
-async function initBrowser(url) {
-  try {
-    if (browser) await browser.close().catch(() => {});
-    browser = await puppeteer.launch({
-      headless: true,
-      args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage','--disable-gpu']
-    });
-    page = await browser.newPage();
-    await page.setViewport({ width: 1280, height: 800 });
-    await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
-    await new Promise(r => setTimeout(r, 5000));
-    await page.evaluate(() => {
-      const canvas = document.querySelector('.main-canvas');
-      if (canvas) {
-        const ctx = canvas.getContext('2d');
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-      }
-    });
-    isReady = true; canvasDirty = true;
-    console.log('✅ Browser ready!');
-    return true;
-  } catch(e) {
-    console.error('❌ Browser failed:', e.message);
-    return false;
-  }
 }
 
 // ─── Telegram Commands ────────────────────────────────────────────────────────
@@ -262,55 +171,76 @@ bot.command('start', (ctx) => ctx.reply(
 ));
 
 bot.command('line', async (ctx) => {
+  if (!isReady) return ctx.reply('❌ No host attached');
   const [x1,y1,x2,y2,color='#000000',width='2'] = ctx.message.text.split(' ').slice(1);
   if (!x2) return ctx.reply('Usage: /line 100 100 900 900 #ff0000 5');
   try {
-    await handleDrawCommand({ type:'draw_direct', x1, y1, x2, y2, color, width });
-    await ctx.replyWithPhoto({ source: await getScreenshot() });
+    await page.evaluate((c) => {
+      window.parasite.drawLine(+c.x1,+c.y1,+c.x2,+c.y2,c.color,+c.width);
+    }, {x1,y1,x2,y2,color,width});
+    ctx.replyWithPhoto({ source: await getScreenshot() });
   } catch(e) { ctx.reply('❌ '+e.message); }
 });
 
 bot.command('circle', async (ctx) => {
-  const [x,y,r,color='#000000',fill='false',width='2'] = ctx.message.text.split(' ').slice(1);
+  if (!isReady) return ctx.reply('❌ No host attached');
+  const [x,y,r,color='#000000',fill='false'] = ctx.message.text.split(' ').slice(1);
   if (!r) return ctx.reply('Usage: /circle 400 300 50 #3498db true');
   try {
-    await handleDrawCommand({ type:'circle', x, y, r, color, fill, width });
-    await ctx.replyWithPhoto({ source: await getScreenshot() });
+    await page.evaluate((c) => {
+      window.parasite.drawCircle(+c.x,+c.y,+c.r,c.color,c.fill==='true');
+    }, {x,y,r,color,fill});
+    ctx.replyWithPhoto({ source: await getScreenshot() });
+  } catch(e) { ctx.reply('❌ '+e.message); }
+});
+
+bot.command('clear', async (ctx) => {
+  if (!isReady) return ctx.reply('❌ No host attached');
+  try {
+    await page.evaluate(() => {
+      ['main-canvas','temp-canvas','grid-canvas'].forEach(cls => {
+        const c = document.querySelector('.'+cls);
+        if(c) { const ctx=c.getContext('2d'); ctx.clearRect(0,0,c.width,c.height); ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,c.width,c.height); }
+      });
+    });
+    ctx.reply('🗑 Cleared');
   } catch(e) { ctx.reply('❌ '+e.message); }
 });
 
 bot.command('undo', async (ctx) => {
-  try { await handleDrawCommand({ type:'undo' }); ctx.reply('↩️ Undone'); }
-  catch(e) { ctx.reply('❌ '+e.message); }
+  if (!isReady) return ctx.reply('❌ No host attached');
+  try {
+    await page.keyboard.down('Control');
+    await page.keyboard.press('z');
+    await page.keyboard.up('Control');
+    ctx.reply('↩️ Undone');
+  } catch(e) { ctx.reply('❌ '+e.message); }
 });
 
 bot.command('redo', async (ctx) => {
-  try { await handleDrawCommand({ type:'redo' }); ctx.reply('↪️ Redone'); }
-  catch(e) { ctx.reply('❌ '+e.message); }
-});
-
-bot.command('clear', async (ctx) => {
-  try { await handleDrawCommand({ type:'clear' }); ctx.reply('🗑 Cleared'); }
-  catch(e) { ctx.reply('❌ '+e.message); }
+  if (!isReady) return ctx.reply('❌ No host attached');
+  try {
+    await page.keyboard.down('Control');
+    await page.keyboard.press('y');
+    await page.keyboard.up('Control');
+    ctx.reply('↪️ Redone');
+  } catch(e) { ctx.reply('❌ '+e.message); }
 });
 
 bot.command('pic', async (ctx) => {
   if (!isReady) return ctx.reply('❌ No host attached');
-  try { await ctx.replyWithPhoto({ source: await getScreenshot(true) }); }
+  try { ctx.replyWithPhoto({ source: await getScreenshot() }); }
   catch(e) { ctx.reply('❌ '+e.message); }
 });
 
 bot.command('ai', async (ctx) => {
   if (!isReady) return ctx.reply('❌ No host attached');
   if (!process.env.GROQ_API_KEY) return ctx.reply('❌ GROQ_API_KEY missing');
-  const prompt = ctx.message.text.replace('/ai', '').trim();
+  const prompt = ctx.message.text.replace('/ai','').trim();
   if (!prompt) return ctx.reply('Usage: /ai draw a cat');
   try {
     await ctx.reply('🤖 Generating drawing plan...');
-    const commands = await callAI(prompt);
-    await ctx.reply(`✅ Got ${commands.length} commands, drawing now...`);
-    await executeCommands(commands);
-    await ctx.replyWithPhoto({ source: await getScreenshot(true) }, { caption: '🖼 Done!' });
+    await runAIDraw(ctx, prompt);
   } catch(e) { ctx.reply('❌ '+e.message); }
 });
 
@@ -319,19 +249,13 @@ bot.command('debug', async (ctx) => {
   try {
     const info = await page.evaluate(() => {
       const canvases = document.querySelectorAll('canvas');
-      const buttons = document.querySelectorAll('button');
-      const inputs = document.querySelectorAll('input');
-      return {
-        canvases: Array.from(canvases).map((c,i) => ({
-          index: i, class: c.className, width: c.width, height: c.height
-        })),
-        buttons: Array.from(buttons).map(b => ({
-          text: b.innerText.trim(), title: b.title, aria: b.getAttribute('aria-label')
-        })).filter(b => b.text || b.title || b.aria),
-        inputs: Array.from(inputs).map(i => ({ type: i.type, class: i.className, value: i.value }))
-      };
+      return Array.from(canvases).map((c,i) => ({
+        index: i, class: c.className, width: c.width, height: c.height
+      }));
     });
-    ctx.reply('🔍 Debug:\n' + JSON.stringify(info, null, 2).slice(0, 3500));
+    const title = await page.title();
+    const bodyText = await page.evaluate(() => document.body.innerText.slice(0,300));
+    ctx.reply(`📄 Title: ${title}\n🖼 Canvases: ${info.length}\n${JSON.stringify(info,null,2)}\n📝 Body:\n${bodyText}`);
   } catch(e) { ctx.reply('❌ '+e.message); }
 });
 
@@ -344,10 +268,7 @@ bot.on('photo', async (ctx) => {
     const fileId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
     const base64 = await getTelegramFileBase64(ctx, fileId);
     const caption = ctx.message.caption || 'Redraw this image as line art. Trace all main outlines and important features.';
-    const commands = await callAI(caption, base64, 'image/jpeg');
-    await ctx.reply(`✅ Got ${commands.length} commands, drawing now...`);
-    await executeCommands(commands);
-    await ctx.replyWithPhoto({ source: await getScreenshot(true) }, { caption: '🖼 Done!' });
+    await runAIDraw(ctx, caption, base64, 'image/jpeg');
   } catch(e) { ctx.reply('❌ '+e.message); }
 });
 
