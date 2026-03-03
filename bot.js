@@ -38,12 +38,8 @@ function broadcast(data) {
     if (ws.readyState === WebSocket.OPEN) ws.send(payload);
 }
 
-// ─── Gemini API call (text or image) ─────────────────────────────────────────
-async function callGemini(prompt, imageBase64 = null, mimeType = 'image/jpeg') {
-  const { GoogleGenerativeAI } = require('@google/generative-ai');
-  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
-
+// ─── OpenRouter AI call (text or image) ──────────────────────────────────────
+async function callAI(prompt, imageBase64 = null, mimeType = 'image/jpeg') {
   const systemPrompt = `You are a drawing bot controller. Output ONLY a JSON array of drawing commands.
 Types:
 - {"type":"draw_direct","x1":n,"y1":n,"x2":n,"y2":n,"color":"#hex","width":n}
@@ -53,15 +49,32 @@ Canvas is 1016x1200. Use many short path segments for curves and complex shapes.
 For images: trace the main outlines and important features only.
 Output ONLY valid JSON array, no markdown, no explanation.`;
 
-  const parts = imageBase64
-    ? [
-        { text: systemPrompt + '\n\n' + prompt },
-        { inlineData: { mimeType, data: imageBase64 } }
-      ]
-    : [{ text: systemPrompt + '\n\n' + prompt }];
+  const messages = [{
+    role: 'user',
+    content: imageBase64
+      ? [
+          { type: 'text', text: systemPrompt + '\n\n' + prompt },
+          { type: 'image_url', image_url: { url: `data:${mimeType};base64,${imageBase64}` } }
+        ]
+      : [{ type: 'text', text: systemPrompt + '\n\n' + prompt }]
+  }];
 
-  const result = await model.generateContent(parts);
-  const text = result.response.text().trim().replace(/```json|```/g, '');
+  const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'google/gemini-2.0-flash-exp:free',
+      messages,
+      max_tokens: 4000
+    })
+  });
+
+  const data = await res.json();
+  if (data.error) throw new Error(data.error.message);
+  const text = data.choices[0].message.content.trim().replace(/```json|```/g, '');
   return JSON.parse(text);
 }
 
@@ -110,7 +123,6 @@ async function handleDrawCommand(cmd) {
   if (!isReady) throw new Error('No host attached');
 
   switch (cmd.type) {
-
     case 'draw_direct': {
       await page.evaluate((c) => {
         const ctx = document.querySelector('.main-canvas').getContext('2d');
@@ -119,7 +131,6 @@ async function handleDrawCommand(cmd) {
         ctx.beginPath(); ctx.moveTo(+c.x1, +c.y1); ctx.lineTo(+c.x2, +c.y2); ctx.stroke();
       }, cmd); break;
     }
-
     case 'circle': {
       await page.evaluate((c) => {
         const ctx = document.querySelector('.main-canvas').getContext('2d');
@@ -129,7 +140,6 @@ async function handleDrawCommand(cmd) {
         if (c.fill === true || c.fill === 'true') ctx.fill(); else ctx.stroke();
       }, cmd); break;
     }
-
     case 'path': {
       await page.evaluate((c) => {
         if (!c.points?.length) return;
@@ -141,7 +151,6 @@ async function handleDrawCommand(cmd) {
         ctx.stroke();
       }, cmd); break;
     }
-
     case 'clear': {
       await page.evaluate(() => {
         ['main-canvas', 'temp-canvas', 'grid-canvas'].forEach(cls => {
@@ -155,21 +164,18 @@ async function handleDrawCommand(cmd) {
         });
       }); break;
     }
-
     case 'undo': {
       await page.keyboard.down('Control');
       await page.keyboard.press('z');
       await page.keyboard.up('Control');
       break;
     }
-
     case 'redo': {
       await page.keyboard.down('Control');
       await page.keyboard.press('y');
       await page.keyboard.up('Control');
       break;
     }
-
     case 'drag': {
       await page.mouse.move(+cmd.x1, +cmd.y1);
       await page.mouse.down();
@@ -182,7 +188,6 @@ async function handleDrawCommand(cmd) {
       }
       await page.mouse.up(); break;
     }
-
     case 'click': await page.mouse.click(+cmd.x, +cmd.y); break;
     case 'eval':  await page.evaluate(new Function(cmd.code)); break;
     default: throw new Error(`Unknown command: ${cmd.type}`);
@@ -295,12 +300,12 @@ bot.command('pic', async (ctx) => {
 
 bot.command('ai', async (ctx) => {
   if (!isReady) return ctx.reply('❌ No host attached');
-  if (!process.env.GEMINI_API_KEY) return ctx.reply('❌ GEMINI_API_KEY missing');
+  if (!process.env.OPENROUTER_API_KEY) return ctx.reply('❌ OPENROUTER_API_KEY missing');
   const prompt = ctx.message.text.replace('/ai', '').trim();
   if (!prompt) return ctx.reply('Usage: /ai draw a cat');
   try {
     await ctx.reply('🤖 Generating drawing plan...');
-    const commands = await callGemini(prompt);
+    const commands = await callAI(prompt);
     await ctx.reply(`✅ Got ${commands.length} commands, drawing now...`);
     await executeCommands(commands);
     await ctx.replyWithPhoto({ source: await getScreenshot(true) }, { caption: '🖼 Done!' });
@@ -328,16 +333,16 @@ bot.command('debug', async (ctx) => {
   } catch(e) { ctx.reply('❌ '+e.message); }
 });
 
-// ─── Photo handler — send image → redraw on canvas ────────────────────────────
+// ─── Photo handler ────────────────────────────────────────────────────────────
 bot.on('photo', async (ctx) => {
   if (!isReady) return ctx.reply('❌ No host attached first');
-  if (!process.env.GEMINI_API_KEY) return ctx.reply('❌ GEMINI_API_KEY missing');
+  if (!process.env.OPENROUTER_API_KEY) return ctx.reply('❌ OPENROUTER_API_KEY missing');
   try {
     await ctx.reply('📸 Analyzing image...');
     const fileId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
     const base64 = await getTelegramFileBase64(ctx, fileId);
     const caption = ctx.message.caption || 'Redraw this image as line art on the canvas. Trace all main outlines and details.';
-    const commands = await callGemini(caption, base64, 'image/jpeg');
+    const commands = await callAI(caption, base64, 'image/jpeg');
     await ctx.reply(`✅ Got ${commands.length} commands, drawing now...`);
     await executeCommands(commands);
     await ctx.replyWithPhoto({ source: await getScreenshot(true) }, { caption: '🖼 Done!' });
@@ -366,4 +371,3 @@ bot.launch()
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
-
