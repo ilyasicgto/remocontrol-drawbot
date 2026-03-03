@@ -66,7 +66,7 @@ Output ONLY valid JSON array, no markdown, no explanation.`;
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({
-      model: 'nvidia/llama-nemotron-embed-vl-1b-v2:free',
+      model: 'qwen/qwen2.5-vl-72b-instruct:free',
       messages,
       max_tokens: 4000
     })
@@ -371,4 +371,5 @@ bot.launch()
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
+
 
