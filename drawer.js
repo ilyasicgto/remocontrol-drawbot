@@ -1,311 +1,168 @@
 /**
- * drawer.js — Direct canvas injection (no mouse simulation)
- * Fast and reliable on headless servers
+ * drawer.js — Controls doodle.gator via Puppeteer
+ * All coordinates from deepdebug_full.json (exact pixels)
+ *
+ * Canvas displayed: x=379, y=37, w=523, h=617
+ * Canvas internal:  1016 x 1200
+ * Toolbar Row 1 y=709: Brush=517  Eraser=578  Fill=640  Eyedrop=702  ColorBall=763
+ * Toolbar Row 2 y=774: Undo=517   Redo=578    Clear=639 Layers=700   SizeBall=762
+ * Size slider: x=507, topY=473 (size=100), botY=650 (size=1)
+ * Hex input: center (640, 675)
+ * Clear confirm: (721, 535)
  */
 
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+const CANVAS = { x: 379, y: 37, w: 523, h: 617 };
+const CANVAS_INTERNAL = { w: 1016, h: 1200 };
 
-const DEBUG = process.env.DEBUG === 'true';
-function log(...args) { if (DEBUG) console.log('[drawer]', ...args); }
+const TOOLS = {
+  brush:     { x: 517, y: 709 },
+  eraser:    { x: 578, y: 709 },
+  fill:      { x: 640, y: 709 },
+  eyedrop:   { x: 702, y: 709 },
+  colorball: { x: 763, y: 709 },
+  undo:      { x: 517, y: 774 },
+  redo:      { x: 578, y: 774 },
+  clear:     { x: 639, y: 774 },
+  layers:    { x: 700, y: 774 },
+  sizeball:  { x: 762, y: 774 },
+};
 
-// ── State ─────────────────────────────────────────────────────────────────────
-let currentColor = '#1a1a1a';
-let currentSize = 10;
-let currentBrush = 'Pencil';
+const BRUSHES = {
+  'Marker':               { x: 640, y: 96  },
+  'Pixel Brush':          { x: 640, y: 139 },
+  'Shapes':               { x: 640, y: 182 },
+  'Airbrush':             { x: 640, y: 225 },
+  'Dry brush':            { x: 640, y: 268 },
+  'Wet brush':            { x: 640, y: 311 },
+  'Velvet Pastel':        { x: 640, y: 354 },
+  'Soft Watercolor':      { x: 640, y: 397 },
+  'Flowing Watercolor':   { x: 640, y: 440 },
+  'Flat brush':           { x: 640, y: 483 },
+  'Quill':                { x: 640, y: 526 },
+  'Ink':                  { x: 640, y: 569 },
+  'Pencil':               { x: 640, y: 612 },
+  'Watercolor (texture)': { x: 640, y: 655 },
+  'Rembrandt':            { x: 640, y: 698 },
+  'Dashed':               { x: 640, y: 741 },
+  'Outline':              { x: 640, y: 784 },
+  'Neon':                 { x: 640, y: 827 },
+  'Particles':            { x: 640, y: 870 },
+  'Glyph':                { x: 640, y: 913 },
+};
 
-// ── Get canvas bounds (for screenshot) ───────────────────────────────────────
-async function getCanvasBounds(page) {
-  const bounds = await page.evaluate(() => {
-    const c = document.querySelector('canvas.main-canvas') || document.querySelector('canvas');
-    if (!c) throw new Error('main-canvas not found');
-    const r = c.getBoundingClientRect();
-    return { x: r.left, y: r.top, width: r.width, height: r.height };
-  });
-  return bounds;
-}
+const SIZE_SLIDER = { x: 507, topY: 473, botY: 650 };
+const CLEAR_DIALOG = { cancel: { x: 603, y: 535 }, confirm: { x: 721, y: 535 } };
+const HEX_INPUT = { x: 640, y: 675 };
 
-function toAbsolute(cx, cy, bounds) {
+function toScreen(nx, ny) {
   return {
-    x: bounds.x + (cx / 1000) * bounds.width,
-    y: bounds.y + (cy / 1000) * bounds.height,
+    x: Math.round(CANVAS.x + (nx / 1000) * CANVAS.w),
+    y: Math.round(CANVAS.y + (ny / 1000) * CANVAS.h),
   };
 }
 
-async function focusCanvas(page) {
-  await page.evaluate(() => {
-    const c = document.querySelector('canvas.main-canvas') || document.querySelector('canvas');
-    if (c) c.focus();
-  });
+async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+async function click(page, x, y) {
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await sleep(50);
+  await page.mouse.up();
   await sleep(50);
 }
 
-// ── Direct canvas drawing ─────────────────────────────────────────────────────
-async function drawOnCanvas(page, fn) {
-  await page.evaluate(fn);
+async function setBrushSize(page, size) {
+  size = Math.max(1, Math.min(100, Math.round(size)));
+  const t = (100 - size) / 99;
+  const y = Math.round(SIZE_SLIDER.topY + t * (SIZE_SLIDER.botY - SIZE_SLIDER.topY));
+  await page.mouse.move(SIZE_SLIDER.x, y);
+  await page.mouse.down();
+  await sleep(30);
+  await page.mouse.up();
 }
 
-async function drawLine(page, x1, y1, x2, y2) {
-  log(`drawLine: (${x1},${y1}) -> (${x2},${y2})`);
-  const color = currentColor;
-  const size = currentSize;
-  await page.evaluate((x1, y1, x2, y2, color, size) => {
-    const canvas = document.querySelector('canvas.main-canvas') || document.querySelector('canvas');
-    const ctx = canvas.getContext('2d');
-    // Generate intermediate points for smooth line
-    const steps = Math.max(30, Math.round(Math.sqrt((x2-x1)**2 + (y2-y1)**2) / 10));
-    const w = canvas.width, h = canvas.height;
-    ctx.strokeStyle = color;
-    ctx.lineWidth = size;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.beginPath();
-    ctx.moveTo((x1/1000)*w, (y1/1000)*h);
-    for (let i = 1; i <= steps; i++) {
-      const t = i / steps;
-      ctx.lineTo(((x1 + (x2-x1)*t)/1000)*w, ((y1 + (y2-y1)*t)/1000)*h);
-    }
-    ctx.stroke();
-  }, x1, y1, x2, y2, color, size);
-
-  // Also fire synthetic mouse events so app registers the stroke
-  await simulateStroke(page, [
-    {x: x1, y: y1},
-    {x: (x1+x2)/2, y: (y1+y2)/2},
-    {x: x2, y: y2}
-  ]);
+async function setColor(page, hex) {
+  if (!hex.startsWith('#')) hex = '#' + hex;
+  await click(page, TOOLS.colorball.x, TOOLS.colorball.y);
+  await sleep(200);
+  await click(page, HEX_INPUT.x, HEX_INPUT.y);
+  await sleep(100);
+  await page.keyboard.down('Control');
+  await page.keyboard.press('a');
+  await page.keyboard.up('Control');
+  await sleep(50);
+  await page.keyboard.type(hex, { delay: 30 });
+  await page.keyboard.press('Enter');
+  await sleep(150);
+  await click(page, CANVAS.x + CANVAS.w / 2, CANVAS.y + CANVAS.h / 2);
+  await sleep(100);
 }
 
-async function drawCircle(page, cx, cy, r) {
-  log(`drawCircle: (${cx},${cy}) r=${r}`);
-  const color = currentColor;
-  const size = currentSize;
-  await page.evaluate((cx, cy, r, color, size) => {
-    const canvas = document.querySelector('canvas.main-canvas') || document.querySelector('canvas');
-    const ctx = canvas.getContext('2d');
-    const w = canvas.width, h = canvas.height;
-    ctx.strokeStyle = color;
-    ctx.lineWidth = size;
-    ctx.lineCap = 'round';
-    ctx.beginPath();
-    ctx.arc((cx/1000)*w, (cy/1000)*h, (r/1000)*Math.min(w,h), 0, Math.PI * 2);
-    ctx.stroke();
-  }, cx, cy, r, color, size);
+async function setBrush(page, brushName) {
+  const brush = BRUSHES[brushName];
+  if (!brush) throw new Error(`Unknown brush: "${brushName}". Use /brushes`);
+  await click(page, TOOLS.brush.x, TOOLS.brush.y);
+  await sleep(300);
+  await click(page, brush.x, brush.y);
+  await sleep(200);
+}
 
-  const points = [];
-  for (let i = 0; i <= 20; i++) {
-    const a = (i/20) * Math.PI * 2;
-    points.push({ x: cx + Math.cos(a)*r, y: cy + Math.sin(a)*r });
+async function drawStroke(page, points) {
+  if (!points || points.length < 2) return;
+  const first = toScreen(points[0].x, points[0].y);
+  await page.mouse.move(first.x, first.y);
+  await page.mouse.down();
+  await sleep(10);
+  for (let i = 1; i < points.length; i++) {
+    const p = toScreen(points[i].x, points[i].y);
+    await page.mouse.move(p.x, p.y, { steps: 1 });
+    await sleep(2);
   }
-  await simulateStroke(page, points);
+  await page.mouse.up();
+  await sleep(20);
+}
+
+async function drawLine(page, x1, y1, x2, y2, steps = 40) {
+  const pts = [];
+  for (let i = 0; i <= steps; i++)
+    pts.push({ x: x1+(x2-x1)*(i/steps), y: y1+(y2-y1)*(i/steps) });
+  await drawStroke(page, pts);
+}
+
+async function drawCircle(page, cx, cy, r, steps = 60) {
+  const pts = [];
+  for (let i = 0; i <= steps; i++) {
+    const a = (i/steps)*Math.PI*2;
+    pts.push({ x: cx+Math.cos(a)*r, y: cy+Math.sin(a)*r });
+  }
+  await drawStroke(page, pts);
 }
 
 async function drawRect(page, x1, y1, x2, y2) {
-  log(`drawRect: (${x1},${y1}) -> (${x2},${y2})`);
-  const color = currentColor;
-  const size = currentSize;
-  await page.evaluate((x1, y1, x2, y2, color, size) => {
-    const canvas = document.querySelector('canvas.main-canvas') || document.querySelector('canvas');
-    const ctx = canvas.getContext('2d');
-    const w = canvas.width, h = canvas.height;
-    ctx.strokeStyle = color;
-    ctx.lineWidth = size;
-    ctx.lineCap = 'round';
-    ctx.strokeRect((x1/1000)*w, (y1/1000)*h, ((x2-x1)/1000)*w, ((y2-y1)/1000)*h);
-  }, x1, y1, x2, y2, color, size);
-}
-
-async function drawFreeStroke(page, points) {
-  log(`drawFreeStroke: ${points.length} points`);
-  if (!points.length) return;
-  const color = currentColor;
-  const size = currentSize;
-  await page.evaluate((pts, color, size) => {
-    const canvas = document.querySelector('canvas.main-canvas') || document.querySelector('canvas');
-    const ctx = canvas.getContext('2d');
-    const w = canvas.width, h = canvas.height;
-    ctx.strokeStyle = color;
-    ctx.lineWidth = size;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.beginPath();
-    ctx.moveTo((pts[0].x/1000)*w, (pts[0].y/1000)*h);
-    for (let i = 1; i < pts.length; i++) {
-      ctx.lineTo((pts[i].x/1000)*w, (pts[i].y/1000)*h);
-    }
-    ctx.stroke();
-  }, points, color, size);
-}
-
-// ── Simulate mouse stroke so app registers it ─────────────────────────────────
-async function simulateStroke(page, points) {
-  try {
-    const bounds = await getCanvasBounds(page);
-    const abs = points.map(p => toAbsolute(p.x, p.y, bounds));
-    await page.mouse.move(abs[0].x, abs[0].y);
-    await page.mouse.down();
-    for (let i = 1; i < abs.length; i++) {
-      await page.mouse.move(abs[i].x, abs[i].y, { steps: 3 });
-      await sleep(5);
-    }
-    await page.mouse.up();
-  } catch(e) {
-    log('simulateStroke failed (ok):', e.message);
+  const corners = [{x:x1,y:y1},{x:x2,y:y1},{x:x2,y:y2},{x:x1,y:y2},{x:x1,y:y1}];
+  const pts = [];
+  for (let i = 0; i < corners.length-1; i++) {
+    const a=corners[i], b=corners[i+1];
+    for (let s=0; s<=20; s++)
+      pts.push({ x: a.x+(b.x-a.x)*s/20, y: a.y+(b.y-a.y)*s/20 });
   }
+  await drawStroke(page, pts);
 }
 
-// ── Color ─────────────────────────────────────────────────────────────────────
-async function setColor(page, hex) {
-  if (!hex.startsWith('#')) hex = '#' + hex;
-  currentColor = hex;
-  log(`setColor: ${hex}`);
-  // Try to set color in the app UI
-  try {
-    await page.evaluate((hex) => {
-      // Try to find and set color input
-      const inputs = document.querySelectorAll('input');
-      for (const input of inputs) {
-        if (input.type === 'color') {
-          input.value = hex;
-          input.dispatchEvent(new Event('input', { bubbles: true }));
-          input.dispatchEvent(new Event('change', { bubbles: true }));
-        }
-      }
-    }, hex);
-  } catch(e) { log('setColor UI failed (ok):', e.message); }
-}
+async function undo(page) { await click(page, TOOLS.undo.x, TOOLS.undo.y); await sleep(100); }
+async function redo(page) { await click(page, TOOLS.redo.x, TOOLS.redo.y); await sleep(100); }
 
-// ── Brush size ────────────────────────────────────────────────────────────────
-async function setBrushSize(page, targetSize) {
-  const size = Math.max(1, Math.min(100, Math.round(targetSize)));
-  currentSize = size;
-  log(`setBrushSize: ${size}`);
-
-  // Try Z/X keys
-  try {
-    await page.bringToFront();
-    await focusCanvas(page);
-    const currentSizeFromUI = await page.evaluate(() => {
-      const el = document.querySelector('.brush-info');
-      if (!el) return 10;
-      const match = el.textContent.match(/(\d+)px/);
-      return match ? parseInt(match[1]) : 10;
-    });
-    const diff = size - currentSizeFromUI;
-    if (diff !== 0) {
-      const key = diff > 0 ? 'z' : 'x';
-      for (let i = 0; i < Math.abs(diff); i++) {
-        await page.keyboard.press(key);
-        await sleep(20);
-      }
-    }
-  } catch(e) { log('setBrushSize keys failed (ok):', e.message); }
-}
-
-// ── Brush type ────────────────────────────────────────────────────────────────
-async function selectBrushType(page, brushName) {
-  currentBrush = brushName;
-  log(`selectBrushType: ${brushName}`);
-  try {
-    await page.mouse.click(517, 709);
-    await sleep(500);
-    const clicked = await page.evaluate((name) => {
-      const labels = Array.from(document.querySelectorAll('.brush-label'));
-      const match = labels.find(el => el.textContent.trim().toLowerCase().includes(name.toLowerCase()));
-      if (match) { match.click(); return true; }
-      return false;
-    }, brushName);
-    await sleep(200);
-    await page.keyboard.press('Escape');
-    await sleep(200);
-    return clicked;
-  } catch(e) { log('selectBrushType failed (ok):', e.message); return false; }
-}
-
-async function selectBrushTool(page) {
-  try {
-    await page.mouse.click(517, 709);
-    await sleep(200);
-    await page.keyboard.press('Escape');
-    await sleep(200);
-  } catch(e) {}
-}
-
-async function selectFillTool(page) {
-  try {
-    await page.mouse.click(640, 709);
-    await sleep(200);
-  } catch(e) {}
-}
-
-// ── Undo / Redo ───────────────────────────────────────────────────────────────
-async function undo(page) {
-  await focusCanvas(page);
-  await page.keyboard.down('Control');
-  await page.keyboard.press('z');
-  await page.keyboard.up('Control');
-  await sleep(200);
-}
-
-async function redo(page) {
-  await focusCanvas(page);
-  await page.keyboard.down('Control');
-  await page.keyboard.press('y');
-  await page.keyboard.up('Control');
-  await sleep(200);
-}
-
-// ── Clear ─────────────────────────────────────────────────────────────────────
 async function clearCanvas(page) {
-  log('clearCanvas');
-  // Direct clear via canvas API
-  await page.evaluate(() => {
-    ['main-canvas', 'temp-canvas', 'grid-canvas'].forEach(cls => {
-      const c = document.querySelector('.' + cls);
-      if (c) {
-        const ctx = c.getContext('2d');
-        ctx.clearRect(0, 0, c.width, c.height);
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, c.width, c.height);
-      }
-    });
-  });
-  // Also try UI clear button
-  try {
-    await page.mouse.click(639, 774);
-    await sleep(600);
-    await page.evaluate(() => {
-      const btn = document.querySelector('button.destructive-button');
-      if (btn) btn.click();
-    });
-    await sleep(400);
-  } catch(e) {}
-}
-
-// ── Screenshot ────────────────────────────────────────────────────────────────
-async function screenshotCanvas(page) {
-  const bounds = await page.evaluate(() => {
-    const c = document.querySelector('canvas.main-canvas') || document.querySelector('canvas');
-    if (!c) throw new Error('main-canvas not found');
-    const r = c.getBoundingClientRect();
-    return { x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) };
-  });
-  return await page.screenshot({
-    type: 'jpeg',
-    quality: 85,
-    clip: { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height },
-  });
-}
-
-async function clickCanvas(page, x, y) {
-  const bounds = await getCanvasBounds(page);
-  const abs = toAbsolute(x, y, bounds);
-  await page.mouse.click(abs.x, abs.y);
-  await sleep(50);
+  await click(page, TOOLS.clear.x, TOOLS.clear.y);
+  await sleep(300);
+  await click(page, CLEAR_DIALOG.confirm.x, CLEAR_DIALOG.confirm.y);
+  await sleep(200);
 }
 
 module.exports = {
-  drawLine, drawCircle, drawRect, drawFreeStroke, clickCanvas,
-  selectBrushTool, selectFillTool, selectBrushType,
-  setColor, setBrushSize, undo, redo, clearCanvas,
-  screenshotCanvas, getCanvasBounds, sleep, focusCanvas,
+  CANVAS, CANVAS_INTERNAL, TOOLS, BRUSHES,
+  toScreen, sleep, click,
+  drawStroke, drawLine, drawCircle, drawRect,
+  setColor, setBrushSize, setBrush,
+  undo, redo, clearCanvas,
 };
