@@ -45,9 +45,10 @@ Types:
 - {"type":"draw_direct","x1":n,"y1":n,"x2":n,"y2":n,"color":"#hex","width":n}
 - {"type":"circle","x":n,"y":n,"r":n,"color":"#hex","fill":bool,"width":n}
 - {"type":"path","points":[[x,y],...],"color":"#hex","width":n}
-Canvas is 1016x1200. Use many short path segments for curves and complex shapes.
-For images: trace the main outlines and important features only.
-Output ONLY valid JSON array, no markdown, no explanation.`;
+Canvas is 1016x1200. Use maximum 80 commands total. Keep it simple.
+For images: trace ONLY the most important outlines, no details.
+Output ONLY a valid complete JSON array. It must be complete and not cut off.
+No markdown, no explanation, only JSON.`;
 
   const messages = [{
     role: 'user',
@@ -68,7 +69,7 @@ Output ONLY valid JSON array, no markdown, no explanation.`;
     body: JSON.stringify({
       model: 'openrouter/auto',
       messages,
-      max_tokens: 4000
+      max_tokens: 8000
     })
   });
 
@@ -375,6 +376,7 @@ bot.launch()
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
+
 
 
 
