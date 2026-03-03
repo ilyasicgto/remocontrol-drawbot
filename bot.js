@@ -42,7 +42,7 @@ function broadcast(data) {
 async function callGemini(prompt, imageBase64 = null, mimeType = 'image/jpeg') {
   const { GoogleGenerativeAI } = require('@google/generative-ai');
   const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-  const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
 
   const systemPrompt = `You are a drawing bot controller. Output ONLY a JSON array of drawing commands.
 Types:
@@ -366,3 +366,4 @@ bot.launch()
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
+
