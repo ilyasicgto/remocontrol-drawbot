@@ -66,7 +66,7 @@ Output ONLY valid JSON array, no markdown, no explanation.`;
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({
-      model: 'google/gemma-3-27b-it:free',
+      model: 'openrouter/auto',
       messages,
       max_tokens: 4000
     })
@@ -371,6 +371,7 @@ bot.launch()
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
+
 
 
 
