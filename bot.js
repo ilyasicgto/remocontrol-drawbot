@@ -74,8 +74,12 @@ Output ONLY valid JSON array, no markdown, no explanation.`;
 
   const data = await res.json();
   if (data.error) throw new Error(data.error.message);
-  const text = data.choices[0].message.content.trim().replace(/```json|```/g, '');
-  return JSON.parse(text);
+  const raw = data.choices[0].message.content.trim();
+  console.log('AI response:', raw.slice(0, 500));
+  const text = raw.replace(/```json|```/g, '').trim();
+  const match = text.match(/\[[\s\S]*\]/);
+  if (!match) throw new Error('No JSON array found in response');
+  return JSON.parse(match[0]);
 }
 
 // ─── Download Telegram file as base64 ────────────────────────────────────────
@@ -371,6 +375,7 @@ bot.launch()
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
+
 
 
 
