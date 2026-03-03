@@ -1,7 +1,7 @@
 /**
  * main.js — Parasite Bot
  * Flow: Your Mini App (canvas.html) → WebSocket → Puppeteer → real doodle.gator game
- * Env vars: BOT_TOKEN, GROQ_API_KEY, PORT
+ * Env vars: BOT_TOKEN, GROQ_API_KEY, PORT 
  * Usage: /seturl <doodle url> — loads the game in puppeteer
  */
 
