@@ -3,175 +3,972 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
-<title>Doodle</title>
+<title>Doodle Gator!</title>
 <style>
-*{margin:0;padding:0;box-sizing:border-box}
-html,body{width:100%;height:100%;background:#1a1a2e;overflow:hidden;font-family:sans-serif}
-#toolbar{display:flex;align-items:center;gap:8px;padding:8px 12px;background:#16213e;border-bottom:1px solid #0f3460}
-#colorBtn{width:30px;height:30px;border-radius:50%;border:3px solid #fff;cursor:pointer;background:#1a1a1a}
-#sizeLabel{color:#eee;font-size:13px;min-width:40px}
-#viewers{margin-left:auto;color:#aaa;font-size:12px}
-#status{position:fixed;top:50px;left:50%;transform:translateX(-50%);background:#0f3460cc;color:#eee;padding:4px 12px;border-radius:20px;font-size:12px;pointer-events:none;transition:opacity .5s}
-#status.hidden{opacity:0}
-canvas{display:block;touch-action:none}
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+:root{
+  --bg:#282e33;--sec:#313b43;--accent:#cc905c;--accent-t:#ecbb90;
+  --text:#f5f5f5;--hint:#82868a;--dest:#f57474;--sep:rgba(255,255,255,0.07);
+  --btn-r:35%;--BTN:49px;--bdr:1.6px solid #cc905c;--btn-bg:rgba(40,46,51,0.1)
+}
+html,body{width:100%;height:100%;background:var(--bg);overflow:hidden;
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:var(--text);user-select:none}
+
+/* ── TOP BAR ── */
+#topbar{position:fixed;top:0;left:0;right:0;height:38px;display:flex;
+  align-items:center;justify-content:center;z-index:50;pointer-events:none}
+#confirm-btn{position:absolute;left:15px;color:var(--text);opacity:.75;
+  font-size:15px;cursor:pointer;pointer-events:auto;padding:2px 6px;border-radius:8px}
+#word{font-size:22px;color:var(--text);cursor:pointer;pointer-events:auto;
+  max-width:65%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ── BOARD ── */
+#board{position:fixed;inset:0;z-index:10}
+#canvas-pos{position:absolute;left:50%;transform:translateX(-50%)}
+#mainCanvas{position:absolute;background:#fff;box-shadow:rgba(0,0,0,.25) 0 3px 12px}
+#tempCanvas{position:absolute;cursor:crosshair;touch-action:none}
+
+/* ── CONTROLS (2 rows below canvas) ── */
+#controls{position:absolute;left:0;right:0;z-index:40}
+.ctrl-frame{display:flex;flex-direction:column;align-items:center;padding:7px 10px 3px}
+.ctrl-row{display:flex;align-items:center;justify-content:space-between;width:100%;height:52px;position:relative}
+
+/* circle-switch — exact from debug: 49x49, border-radius 35%, border 1.6px #cc905c */
+.cs{width:var(--BTN);height:var(--BTN);border-radius:var(--btn-r);border:var(--bdr);
+  background:var(--btn-bg);display:flex;align-items:center;justify-content:center;
+  cursor:pointer;position:relative;color:var(--accent);flex-shrink:0;
+  transition:background .12s,color .12s}
+.cs.active{background:var(--accent);color:#fff}
+.cs svg{width:24px;height:24px;flex-shrink:0}
+/* menu dot — 17x2.2px top-right orange bar (from debug) */
+.cs.dot::after{content:'';position:absolute;top:4px;right:4px;
+  width:17px;height:2.2px;background:var(--accent);border-radius:1.5px}
+.cs.active.dot::after{background:#fff}
+
+/* color-ball (5th in row1) */
+#colorBall{width:var(--BTN);height:var(--BTN);border-radius:var(--btn-r);border:var(--bdr);
+  background:var(--btn-bg);display:flex;align-items:center;justify-content:center;
+  cursor:pointer;flex-shrink:0}
+#colorInner{width:35px;height:35px;border-radius:50%;
+  box-shadow:rgba(128,128,128,1) 0 0 0 0.4px,rgba(0,0,0,1) 0 0 0 0.4px}
+
+/* size-ball (5th in row2) */
+#sizeBall{width:var(--BTN);height:var(--BTN);border-radius:var(--btn-r);border:var(--bdr);
+  background:var(--btn-bg);display:flex;align-items:center;justify-content:center;
+  cursor:ns-resize;flex-shrink:0;position:relative}
+#sizeInner{border-radius:50%;display:flex;align-items:center;justify-content:center;
+  transition:width .1s,height .1s;box-shadow:rgba(128,128,128,1) 0 0 0 0.4px,rgba(0,0,0,1) 0 0 0 0.4px}
+#sizeLbl{position:absolute;color:#eee;font-size:8px;opacity:.85;pointer-events:none}
+/* brush-info: right of row2 */
+#brushInfo{position:absolute;right:0;top:0;height:100%;display:flex;flex-direction:column;
+  justify-content:center;align-items:flex-end;padding-right:4px;
+  color:var(--hint);font-size:12px;line-height:1.3;pointer-events:none;min-width:44px}
+
+/* ── VERTICAL WIDTH SLIDER (left of canvas, class=widthSlider) ── */
+/* Real game: vertical range input at x=495,y=473,w=25,h=177 */
+#widthSliderWrap{position:absolute;display:flex;align-items:center;justify-content:center;
+  z-index:30;display:none}
+#widthSliderWrap.show{display:flex}
+#widthSlider{
+  -webkit-appearance:slider-vertical;appearance:slider-vertical;
+  writing-mode:vertical-lr;direction:rtl;
+  width:25px;height:177px;
+  accent-color:var(--accent);cursor:pointer;
+  background:var(--sec);border-radius:4px;
+}
+/* fallback for browsers that don't support vertical */
+@supports not (appearance: slider-vertical){
+  #widthSlider{
+    writing-mode:vertical-lr;direction:rtl;
+    -webkit-appearance:none;
+    width:177px;height:25px;
+    transform:rotate(180deg);
+  }
+}
+
+/* ── COLOR PALETTE (overlaid on canvas, class=color-palette) ── */
+/* Real: rect=(540,459,200,232) — right-center of canvas */
+#colorPalette{position:absolute;z-index:35;display:none;flex-direction:column;
+  background:rgba(40,46,51,0.95);border-radius:10px;padding:10px;
+  box-shadow:0 4px 20px rgba(0,0,0,.5)}
+#colorPalette.show{display:flex}
+
+/* react-colorful style HSV picker */
+.hue-picker{position:relative;width:180px;height:120px;border-radius:6px;
+  overflow:hidden;cursor:crosshair;margin-bottom:8px}
+.hue-picker canvas{width:100%;height:100%}
+.hue-pointer{position:absolute;width:16px;height:16px;border-radius:50%;
+  border:2.5px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.5);
+  transform:translate(-50%,-50%);pointer-events:none}
+.hue-strip{position:relative;width:180px;height:12px;border-radius:6px;
+  background:linear-gradient(to right,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00);
+  cursor:pointer;margin-bottom:8px}
+.hue-strip-ptr{position:absolute;top:-3px;width:18px;height:18px;border-radius:50%;
+  background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.5);transform:translateX(-50%);
+  pointer-events:none}
+.alpha-strip{position:relative;width:180px;height:12px;border-radius:6px;
+  cursor:pointer;margin-bottom:10px}
+.alpha-strip-ptr{position:absolute;top:-3px;width:18px;height:18px;border-radius:50%;
+  background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.5);transform:translateX(-50%);
+  pointer-events:none}
+
+/* hex input (class=colorful-input input-field) */
+#hexInput{width:100%;background:rgba(185,185,185,0.11);border:1px solid rgba(204,144,92,.4);
+  color:var(--text);border-radius:6px;padding:5px 8px;font-size:13px;outline:none;
+  font-family:monospace;margin-bottom:8px}
+
+/* small swatch columns (right side: 2 cols × 5 rows, 30x30 each) */
+.swatch-cols{display:flex;gap:4px;margin-bottom:6px}
+.swatch-col{display:flex;flex-direction:column;gap:4px}
+.sw{width:30px;height:30px;border-radius:50%;cursor:pointer;flex-shrink:0;
+  border:2px solid transparent;transition:transform .1s}
+.sw:active{transform:scale(.88)}
+.sw.sel{border-color:#fff}
+
+/* bottom-controls row (saved-add-color + premium switch) */
+.pal-bottom{display:flex;gap:4px;align-items:center}
+.saved-add{width:30px;height:30px;border-radius:50%;background:rgba(187,187,187,.4);
+  border:none;color:var(--hint);font-size:18px;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.saved-dot{width:30px;height:30px;border-radius:50%;cursor:pointer;flex-shrink:0;border:2px solid transparent}
+.saved-dot:active{transform:scale(.88)}
+
+/* gradient-color-switch */
+.grad-switch{width:69px;height:25px;border-radius:4px;background:linear-gradient(to right,#cc905c,#f0c080);
+  border:none;cursor:pointer;border-radius:12px;font-size:10px;color:#fff;padding:0 6px}
+
+/* ── BRUSH LIST OVERLAY (full-screen, class=brush-option-row) ── */
+/* Real: brush rows at x=513,w=255. Brush list opens as a panel covering the canvas area */
+#brushOverlay{position:fixed;inset:0;z-index:200;display:none;background:var(--bg)}
+#brushOverlay.show{display:flex;flex-direction:column}
+.brush-menu-header{display:flex;align-items:center;height:37px;padding:0 14px;
+  background:var(--sec);border-bottom:1px solid var(--sep);flex-shrink:0}
+.brush-menu-back{background:none;border:none;color:var(--accent);cursor:pointer;
+  font-size:20px;padding:0 8px 0 0}
+.brush-menu-title{flex:1;font-size:16px;font-weight:600;color:var(--text);text-align:center}
+.brush-menu-close{background:none;border:none;color:var(--hint);cursor:pointer;font-size:20px}
+#brushListScroll{flex:1;overflow-y:auto}
+#brushListScroll::-webkit-scrollbar{width:3px}
+#brushListScroll::-webkit-scrollbar-thumb{background:var(--accent);border-radius:2px}
+/* brush-option-row: 255x41 */
+.brow{display:flex;align-items:center;height:41px;padding:0 14px;cursor:pointer;
+  border-bottom:1px solid rgba(138,138,138,0.07);transition:background .1s}
+.brow.active{background:var(--accent)}
+.brow:not(.active):hover{background:rgba(204,144,92,.12)}
+.brow-icon{width:35px;height:25px;display:flex;align-items:center;justify-content:center;
+  flex-shrink:0;margin-right:8px;color:var(--accent-t)}
+.brow.active .brow-icon{color:#fff}
+.brow-name{flex:1;font-size:14px;color:var(--text)}
+.brow.active .brow-name{color:#fff}
+.brow-drag{color:var(--hint);font-size:14px;opacity:.5}
+/* brush-category-switcher: bottom row */
+.brush-cats{display:flex;gap:6px;padding:8px 14px;background:var(--sec);
+  border-top:1px solid var(--sep);flex-shrink:0;justify-content:center}
+.cat-btn{padding:6px 20px;border-radius:17px;border:none;cursor:pointer;
+  font-size:13px;font-weight:600;transition:.12s}
+.cat-btn.active{background:var(--accent);color:#fff}
+.cat-btn:not(.active){background:var(--bg);color:var(--hint)}
+
+/* ── LAYER MENU (slides from right, class=layer-menu) ── */
+/* Real: rect=(971,611,296,199) in 1280px viewport → right-aligned */
+#layerMenu{position:fixed;right:0;z-index:200;display:none;
+  background:rgb(40,46,51);border-radius:10px 0 0 10px;
+  min-width:260px;max-width:320px;box-shadow:-4px 0 20px rgba(0,0,0,.4)}
+#layerMenu.show{display:block}
+.layer-menu-header{display:flex;align-items:center;height:40px;padding:0 12px;
+  border-bottom:1px solid var(--sep)}
+.layer-menu-title{flex:1;font-size:15px;font-weight:600;color:var(--text)}
+.layer-menu-buttons{display:flex;gap:4px;align-items:center}
+.new-layer-btn{width:36px;height:36px;border-radius:8px;background:var(--accent);
+  border:none;color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center}
+.new-layer-btn.danger{background:var(--dest)}
+.new-layer-btn svg{width:16px;height:16px}
+/* layer-list */
+.layer-list{padding:4px 0}
+/* layer-row: 284x46 */
+.lrow{display:flex;align-items:center;height:46px;padding:0 8px;cursor:pointer;
+  border-bottom:1px solid var(--sep);transition:background .1s}
+.lrow.active{background:var(--accent)}
+.drag-handle{color:var(--hint);font-size:14px;opacity:.5;margin-right:4px;cursor:grab}
+.layer-thumbnail{width:36px;height:36px;border-radius:5px;background:#fff;
+  flex-shrink:0;margin-right:8px;border:1px solid rgba(255,255,255,.1)}
+.layer-row-column{flex:1}
+.layer-row-main{font-size:13px;color:var(--text);font-weight:500}
+.lrow.active .layer-row-main,.lrow.active .layer-metrics{color:#fff}
+.layer-metrics{font-size:10px;color:var(--hint);margin-top:2px}
+.layer-ctrl-btns{display:flex;gap:2px}
+/* layer-control-button: 37x27 */
+.lcb{width:34px;height:26px;border-radius:5px;background:rgba(255,255,255,.12);
+  border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--text)}
+.lcb svg{width:15px;height:15px}
+/* settings-item rows */
+.settings-item{display:flex;align-items:center;gap:8px;padding:8px 10px;
+  border-top:1px solid var(--sep);cursor:pointer}
+.settings-label{flex:1;font-size:13px;color:var(--text)}
+.settings-color-indicator{width:24px;height:24px;border-radius:50%;background:#fff;
+  flex-shrink:0;border:1px solid rgba(255,255,255,.2)}
+/* native checkbox styled */
+.settings-item input[type=checkbox]{accent-color:var(--accent);width:18px;height:18px;cursor:pointer}
+
+/* ── WORD MENU (overlaid at x=521 area) ── */
+/* Real: items at x=521,w=238-249. Opens centered/right of canvas */
+#wordMenu{position:fixed;z-index:200;display:none;
+  background:var(--sec);border-radius:10px;min-width:260px;
+  box-shadow:0 4px 20px rgba(0,0,0,.5)}
+#wordMenu.show{display:block}
+.word-menu-header{display:flex;align-items:center;padding:12px 14px 8px;
+  border-bottom:1px solid var(--sep)}
+.word-menu-title{flex:1;font-size:16px;font-weight:600;color:var(--text)}
+.word-menu-close{background:none;border:none;color:var(--hint);font-size:20px;cursor:pointer}
+/* wide-button: 238x40, accent */
+.wide-button{display:block;width:calc(100% - 28px);margin:10px 14px 6px;
+  padding:10px;border-radius:10px;border:none;cursor:pointer;
+  font-size:14px;font-weight:600;text-align:center}
+.wide-button.accent{background:var(--accent);color:#fff}
+/* hint buttons: 36x36 per letter */
+.hints-section{padding:8px 14px}
+.hints-title{color:var(--hint);font-size:11px;margin-bottom:6px;text-transform:uppercase;letter-spacing:.4px}
+.hints-row{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px}
+.hint-btn{min-width:36px;height:36px;padding:0 6px;border-radius:8px;border:none;
+  cursor:pointer;font-size:14px;font-weight:700}
+.hint-btn.active{background:var(--accent);color:#fff}
+.hint-btn:not(.active){background:rgba(204,204,204,.22);color:var(--text)}
+/* word-menu-item: 238x28-30, bg rgba(154,154,154,0.1) */
+.word-menu-item,.drawing-menu-item{display:flex;align-items:center;gap:8px;
+  padding:8px 14px;background:rgba(154,154,154,.1);border-bottom:1px solid var(--sep);cursor:pointer}
+.word-menu-item label,.drawing-menu-item label{flex:1;font-size:13px;color:var(--text);cursor:pointer}
+.word-menu-item-checkbox{accent-color:var(--accent);width:18px;height:18px;cursor:pointer}
+/* gray-button: 238x41, bg=rgb(130,134,138) */
+.gray-button{display:block;width:calc(100% - 28px);margin:6px 14px;
+  padding:11px;border-radius:10px;border:none;cursor:pointer;
+  font-size:14px;font-weight:600;background:rgb(130,134,138);color:#fff;text-align:center}
+
+/* ── CLEAR DIALOG (modal) ── */
+/* Real: cancel at (549,517), clear at (667,517), both 108x37 */
+#clearDialog{position:fixed;inset:0;z-index:300;display:none;
+  align-items:center;justify-content:center;background:rgba(0,0,0,.5)}
+#clearDialog.show{display:flex}
+.clear-box{background:var(--sec);border-radius:14px;padding:22px 24px;text-align:center;min-width:240px}
+.clear-box p{color:var(--text);margin-bottom:18px;font-size:15px}
+.clear-btns{display:flex;gap:10px;justify-content:center}
+/* message-popup-button: 108x37 */
+.mpb{width:108px;height:37px;border-radius:10px;border:none;
+  cursor:pointer;font-size:14px;font-weight:600}
+.mpb.cancel-button{background:rgb(130,134,138);color:#fff}
+.mpb.destructive-button{background:rgb(245,116,116);color:#fff}
+
+/* ── TOAST ── */
+#toast{position:fixed;top:44px;left:50%;transform:translateX(-50%);
+  background:rgba(15,52,96,.9);color:#eee;padding:4px 16px;border-radius:20px;
+  font-size:12px;pointer-events:none;opacity:0;transition:opacity .3s;z-index:500;white-space:nowrap}
+#toast.show{opacity:1}
 </style>
 </head>
 <body>
-<div id="toolbar">
-  <div id="colorBtn"></div>
-  <span id="sizeLabel">10px</span>
-  <span id="viewers">👁 0</span>
+
+<!-- TOP BAR -->
+<div id="topbar">
+  <span id="confirm-btn">✔️ 🖼</span>
+  <span id="word">word ⚙️</span>
 </div>
-<div id="status" class="hidden"></div>
-<canvas id="c"></canvas>
+
+<!-- BOARD -->
+<div id="board">
+  <div id="canvas-pos">
+    <canvas id="mainCanvas"></canvas>
+    <canvas id="tempCanvas"></canvas>
+  </div>
+
+  <!-- Vertical width slider (left of canvas, shown when color picker open) -->
+  <div id="widthSliderWrap">
+    <input type="range" id="widthSlider" min="1" max="100" value="10" orient="vertical"/>
+  </div>
+
+  <!-- Color palette overlay (on canvas) -->
+  <div id="colorPalette">
+    <!-- HSV saturation/value box -->
+    <canvas id="hsvCanvas" width="180" height="120" style="border-radius:6px;cursor:crosshair;display:block;margin-bottom:8px"></canvas>
+    <!-- Hue strip -->
+    <div class="hue-strip" id="hueStrip">
+      <div class="hue-strip-ptr" id="huePtr"></div>
+    </div>
+    <!-- Alpha strip -->
+    <div class="alpha-strip" id="alphaStrip">
+      <div class="alpha-strip-ptr" id="alphaPtr"></div>
+    </div>
+    <!-- Hex input -->
+    <input type="text" id="hexInput" placeholder="#000000" maxlength="9" spellcheck="false"/>
+    <!-- Swatch columns + bottom controls in a row -->
+    <div style="display:flex;gap:6px;align-items:flex-start">
+      <div class="swatch-cols" id="swatchCols">
+        <div class="swatch-col" id="swCol1"></div>
+        <div class="swatch-col" id="swCol2"></div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <!-- bottom-controls: saved-add + premium -->
+        <div class="pal-bottom" id="savedRow">
+          <button class="saved-add" id="addSaved">+</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CONTROLS (2 rows) -->
+  <div id="controls">
+    <div class="ctrl-frame">
+      <!-- Row 1: Brush Eraser Fill Eyedrop ColorBall -->
+      <div class="ctrl-row">
+        <div class="cs dot active" id="btnBrush">
+          <svg viewBox="0 0 512 512" fill="currentColor"><path d="M481 31C445.1-4.8 386.9-4.8 351 31l-15 15L322.9 33C294.8 4.9 249.2 4.9 221.1 33L135 119c-9.4 9.4-9.4 24.6 0 33.9s24.6 9.4 33.9 0L255 66.9c9.4-9.4 24.6-9.4 33.9 0L302.1 80 186.3 195.7 316.3 325.7 481 161c35.9-35.9 35.9-94.1 0-129.9zM293.7 348.3L163.7 218.3 99.5 282.5c-48 48-80.8 109.2-94.1 175.8l-5 25c-1.6 7.9.9 16 6.6 21.7s13.8 8.1 21.7 6.6l25-5c66.6-13.3 127.8-46.1 175.8-94.1l64.2-64.2z"/></svg>
+        </div>
+        <div class="cs dot" id="btnEraser">
+          <svg viewBox="0 0 512 512" fill="currentColor"><path d="M497.941 273.941c18.745-18.745 18.745-49.137 0-67.882l-160-160c-18.745-18.745-49.136-18.746-67.883 0l-256 256c-18.745 18.745-18.745 49.137 0 67.882l96 96A48.004 48.004 0 0 0 144 480h356c6.627 0 12-5.373 12-12v-40c0-6.627-5.373-12-12-12H355.883l142.058-142.059zm-302.627-62.627l137.373 137.373L265.373 416H150.628l-80-80 124.686-124.686z"/></svg>
+        </div>
+        <div class="cs" id="btnFill">
+          <svg viewBox="0 0 576 512" fill="currentColor"><path d="M512 320s-64 92.65-64 128c0 35.35 28.66 64 64 64s64-28.65 64-64-64-128-64-128zm-9.37-102.94L294.94 9.37C288.69 3.12 280.5 0 272.31 0s-16.38 3.12-22.62 9.37l-81.58 81.58L81.93 4.76c-6.25-6.25-16.38-6.25-22.62 0L36.69 27.38c-6.24 6.25-6.24 16.38 0 22.62l86.19 86.18-94.76 94.76c-37.49 37.48-37.49 98.26 0 135.75l117.19 117.19c18.74 18.74 43.31 28.12 67.87 28.12 24.57 0 49.13-9.37 67.87-28.12l221.57-221.57c12.5-12.5 12.5-32.75.01-45.25z"/></svg>
+        </div>
+        <div class="cs" id="btnEyedrop">
+          <svg viewBox="0 0 512 512" fill="currentColor"><path d="M341.6 29.2L240.1 130.8l-9.4-9.4c-12.5-12.5-32.8-12.5-45.3 0s-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3l-9.4-9.4L482.8 170.4c39-39 39-102.2 0-141.1s-102.2-39-141.1 0zM55.4 323.3c-15 15-23.4 35.4-23.4 56.6v42.4L5.4 462.2c-8.5 12.7-6.8 29.6 4 40.4s27.7 12.5 40.4 4L89.7 480h42.4c21.2 0 41.6-8.4 56.6-23.4L309.4 335.9l-45.3-45.3L143.4 411.3c-3 3-7.1 4.7-11.3 4.7H96V379.9c0-4.2 1.7-8.3 4.7-11.3L221.4 247.9l-45.3-45.3L55.4 323.3z"/></svg>
+        </div>
+        <div id="colorBall"><div id="colorInner"></div></div>
+      </div>
+      <!-- Row 2: Undo Redo Clear Layers SizeBall -->
+      <div class="ctrl-row">
+        <div class="cs" id="btnUndo">
+          <svg viewBox="0 0 512 512" fill="currentColor"><path d="M255.545 8c-66.269.119-126.438 26.233-170.86 68.685L48.971 40.971C33.851 25.851 8 36.559 8 57.941V192c0 13.255 10.745 24 24 24h134.059c21.382 0 32.09-25.851 16.971-40.971l-41.75-41.75c30.864-28.899 70.801-44.907 113.23-45.273 92.398-.798 170.283 73.977 169.484 169.442C423.236 348.009 349.816 424 256 424c-41.127 0-79.997-14.678-110.629-41.556-4.743-4.161-11.906-3.908-16.368.553L89.34 422.659c-4.872 4.872-4.631 12.815.482 17.433C133.798 479.813 192.074 504 256 504c136.966 0 247.999-111.033 248-247.998C504.001 119.193 392.354 7.755 255.545 8z"/></svg>
+        </div>
+        <div class="cs" id="btnRedo">
+          <svg viewBox="0 0 512 512" fill="currentColor"><path d="M256.455 8c66.269.119 126.437 26.233 170.859 68.685l35.715-35.715C478.149 25.851 504 36.559 504 57.941V192c0 13.255-10.745 24-24 24H345.941c-21.382 0-32.09-25.851-16.971-40.971l41.75-41.75c-30.864-28.899-70.801-44.907-113.23-45.273-92.398-.798-170.283 73.977-169.484 169.442C88.764 348.009 162.184 424 256 424c41.127 0 79.997-14.678 110.629-41.556 4.743-4.161 11.906-3.908 16.368.553l39.662 39.662c4.872 4.872 4.631 12.815-.482 17.433C378.202 479.813 319.926 504 256 504 119.034 504 8.001 392.967 8 256 7.999 119.193 119.646 7.755 256.455 8z"/></svg>
+        </div>
+        <div class="cs" id="btnClear">
+          <svg viewBox="0 0 352 512" fill="currentColor"><path d="M242.72 256l100.07-100.07c12.28-12.28 12.28-32.19 0-44.48l-22.24-22.24c-12.28-12.28-32.19-12.28-44.48 0L176 189.28 75.93 89.21c-12.28-12.28-32.19-12.28-44.48 0L9.21 111.45c-12.28 12.28-12.28 32.19 0 44.48L109.28 256 9.21 356.07c-12.28 12.28-12.28 32.19 0 44.48l22.24 22.24c12.28 12.28 32.2 12.28 44.48 0L176 322.72l100.07 100.07c12.28 12.28 32.2 12.28 44.48 0l22.24-22.24c12.28-12.28 12.28-32.19 0-44.48L242.72 256z"/></svg>
+        </div>
+        <div class="cs dot" id="btnLayers">
+          <svg viewBox="0 0 512 512" fill="currentColor"><path d="M12.41 148.02l232.94 105.67c6.8 3.09 14.49 3.09 21.29 0l232.94-105.67c16.55-7.51 16.55-32.52 0-40.03L266.65 2.31a25.607 25.607 0 0 0-21.29 0L12.41 107.98c-16.55 7.51-16.55 32.53 0 40.04zm487.18 88.28l-58.09-26.33-161.64 73.27c-7.56 3.43-15.59 5.17-23.86 5.17s-16.29-1.74-23.86-5.17L70.51 209.97l-58.1 26.33c-16.55 7.5-16.55 32.5 0 40l232.94 105.59c6.8 3.08 14.49 3.08 21.29 0L499.59 276.3c16.55-7.5 16.55-32.5 0-40zm0 127.8l-57.87-26.23-161.86 73.37c-7.56 3.43-15.59 5.17-23.86 5.17s-16.29-1.74-23.86-5.17L70.7 337.87 12.41 364.1c-16.55 7.5-16.55 32.5 0 40l232.94 105.59c6.8 3.08 14.49 3.08 21.29 0L499.59 404.1c16.55-7.5 16.55-32.5 0-40z"/></svg>
+        </div>
+        <div id="sizeBall">
+          <div id="sizeInner"></div>
+          <span id="sizeLbl"></span>
+        </div>
+      </div>
+    </div>
+    <div id="brushInfo"></div>
+  </div>
+</div>
+
+<!-- BRUSH OVERLAY (fullscreen) -->
+<div id="brushOverlay">
+  <div class="brush-menu-header">
+    <button class="brush-menu-back" id="brushBack">‹</button>
+    <span class="brush-menu-title">Brush</span>
+    <button class="brush-menu-close" id="brushClose">✕</button>
+  </div>
+  <div id="brushListScroll"></div>
+  <div class="brush-cats">
+    <button class="cat-btn active" data-cat="basic">Basic</button>
+    <button class="cat-btn" data-cat="personal">Personal</button>
+  </div>
+</div>
+
+<!-- LAYER MENU (right panel) -->
+<div id="layerMenu">
+  <div class="layer-menu-header">
+    <span class="layer-menu-title">Layers</span>
+    <div class="layer-menu-buttons">
+      <!-- hidden merge button -->
+      <button class="new-layer-btn" id="layerMerge" title="Merge down" style="display:none">
+        <svg viewBox="0 0 512 512" fill="currentColor"><path d="M288 64c0-17.67-14.33-32-32-32s-32 14.33-32 32v241.37l-52.69-52.69c-12.5-12.5-32.76-12.5-45.25 0s-12.5 32.76 0 45.25l108 108C240.97 412.44 248.49 416 256 416s15.03-3.56 20.94-9.44l108-108c12.5-12.5 12.5-32.76 0-45.25s-32.76-12.5-45.25 0L288 305.37V64zm160 320H64c-17.67 0-32 14.33-32 32s14.33 32 32 32h384c17.67 0 32-14.33 32-32s-14.33-32-32-32z"/></svg>
+      </button>
+      <button class="new-layer-btn" id="layerAdd" title="Add layer">
+        <svg viewBox="0 0 448 512" fill="currentColor"><path d="M416 208H272V64c0-17.67-14.33-32-32-32h-32c-17.67 0-32 14.33-32 32v144H32c-17.67 0-32 14.33-32 32v32c0 17.67 14.33 32 32 32h144v144c0 17.67 14.33 32 32 32h32c17.67 0 32-14.33 32-32V304h144c17.67 0 32-14.33 32-32v-32c0-17.67-14.33-32-32-32z"/></svg>
+      </button>
+      <button class="new-layer-btn danger" id="layerDel" title="Delete layer">
+        <svg viewBox="0 0 448 512" fill="currentColor"><path d="M432 32H312l-9.4-18.7A24 24 0 0 0 281.1 0H166.8a23.72 23.72 0 0 0-21.4 13.3L136 32H16A16 16 0 0 0 0 48v32a16 16 0 0 0 16 16h416a16 16 0 0 0 16-16V48a16 16 0 0 0-16-16zM53.2 467a48 48 0 0 0 47.9 45h245.8a48 48 0 0 0 47.9-45L416 128H32z"/></svg>
+      </button>
+    </div>
+  </div>
+  <div class="layer-list" id="layerList">
+    <div class="lrow active" data-layer="0">
+      <span class="drag-handle">☰</span>
+      <div class="layer-thumbnail"></div>
+      <div class="layer-row-column">
+        <div class="layer-row-main">Base layer</div>
+        <div class="layer-metrics">📏103 | 2 🟢1 (1) plain</div>
+      </div>
+      <div class="layer-ctrl-btns">
+        <button class="lcb" title="Visibility">
+          <svg viewBox="0 0 576 512" fill="currentColor"><path d="M288 144a110.94 110.94 0 0 0-31.24 5 55.4 55.4 0 0 1 7.24 27 56 56 0 0 1-56 56 55.4 55.4 0 0 1-27-7.24A111.71 111.71 0 1 0 288 144zm284.52 97.4C518.29 135.59 410.93 64 288 64S57.68 135.64 3.48 241.41a32.35 32.35 0 0 0 0 29.19C57.71 376.41 165.07 448 288 448s230.32-71.64 284.52-177.41a32.35 32.35 0 0 0 0-29.19z"/></svg>
+        </button>
+        <button class="lcb" title="Lock">
+          <svg viewBox="0 0 448 512" fill="currentColor"><path d="M400 224h-24v-72C376 68.2 307.8 0 224 0S72 68.2 72 152v72H48c-26.5 0-48 21.5-48 48v192c0 26.5 21.5 48 48 48h352c26.5 0 48-21.5 48-48V272c0-26.5-21.5-48-48-48zm-104 0H152v-72c0-39.7 32.3-72 72-72s72 32.3 72 72v72z"/></svg>
+        </button>
+        <button class="lcb" title="Layer settings">
+          <svg viewBox="0 0 512 512" fill="currentColor"><path d="M444.788 291.1l42.616 24.599c4.867 2.809 7.126 8.618 5.459 13.985-11.07 35.642-29.97 67.842-54.689 94.586a12.016 12.016 0 0 1-14.832 2.254l-42.584-24.595a191.576 191.576 0 0 1-60.759 35.13v49.182a12.01 12.01 0 0 1-9.377 11.718c-34.956 7.85-72.499 8.256-109.219.007-5.49-1.233-9.403-6.096-9.403-11.723v-49.184a191.555 191.555 0 0 1-60.759-35.13l-42.584 24.595a12.016 12.016 0 0 1-14.832-2.254c-24.718-26.744-43.619-58.944-54.689-94.586-1.667-5.366.592-11.175 5.459-13.985L67.212 291.1a193.48 193.48 0 0 1 0-70.199l-42.616-24.599c-4.867-2.809-7.126-8.618-5.459-13.985 11.07-35.642 29.97-67.842 54.689-94.586a12.016 12.016 0 0 1 14.832-2.254l42.584 24.595a191.576 191.576 0 0 1 60.759-35.13V25.759a12.01 12.01 0 0 1 9.377-11.718c34.956-7.85 72.499-8.256 109.219-.007 5.49 1.233 9.403 6.096 9.403 11.723v49.184a191.555 191.555 0 0 1 60.759 35.13l42.584-24.595a12.016 12.016 0 0 1 14.832 2.254c24.718 26.744 43.619 58.944 54.689 94.586 1.667 5.366-.592 11.175-5.459 13.985l-42.616 24.599a193.485 193.485 0 0 1 0 70.2zM256 324c37.49 0 68-30.51 68-68s-30.51-68-68-68-68 30.51-68 68 30.51 68 68 68z"/></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+  <!-- settings-items -->
+  <div class="settings-item" id="transformItem">
+    <input type="checkbox" class="settings-item input" id="transformCb" style="accent-color:var(--accent)"/>
+    <span class="settings-label">Transform layers</span>
+  </div>
+  <div class="settings-item" id="bgColorItem">
+    <span class="settings-color-indicator" id="bgColorDot"></span>
+    <span class="settings-label">Background color</span>
+  </div>
+</div>
+
+<!-- WORD MENU -->
+<div id="wordMenu">
+  <div class="word-menu-header">
+    <span class="word-menu-title" id="wordMenuTitle">word ⚙️</span>
+    <button class="word-menu-close" id="wordMenuClose">✕</button>
+  </div>
+  <!-- hints -->
+  <div class="hints-section">
+    <div class="hints-title">Reveal letter hint</div>
+    <div id="hintsRow1" class="hints-row"></div>
+    <div id="hintsRow2" class="hints-row"></div>
+  </div>
+  <button class="wide-button accent" id="changeWord">Change word</button>
+  <!-- word-menu-items (checkboxes) -->
+  <div class="word-menu-item">
+    <input type="checkbox" class="word-menu-item-checkbox" id="cb18"/>
+    <label for="cb18">18+ Spoiler</label>
+  </div>
+  <div class="word-menu-item">
+    <input type="checkbox" class="word-menu-item-checkbox" id="cbFS"/>
+    <label for="cbFS">Full screen</label>
+  </div>
+  <div class="word-menu-item">
+    <input type="checkbox" class="word-menu-item-checkbox" id="cbRef"/>
+    <label for="cbRef">Reference</label>
+  </div>
+  <div class="word-menu-item">
+    <label>Open in browser ↗</label>
+  </div>
+  <div class="word-menu-item">
+    <label>Pet Avatar ↗</label>
+  </div>
+  <div class="drawing-menu-item">
+    <label>Create sticker ↗</label>
+  </div>
+  <div class="drawing-menu-item">
+    <label>Send to auction ↗</label>
+  </div>
+  <button class="gray-button" style="margin-top:8px">This drawing</button>
+  <button class="gray-button" style="margin-bottom:12px">Canvas Settings</button>
+</div>
+
+<!-- CLEAR DIALOG -->
+<div id="clearDialog">
+  <div class="clear-box">
+    <p>Clear the canvas?</p>
+    <div class="clear-btns">
+      <button class="mpb cancel-button" id="clearCancel">Cancel</button>
+      <button class="mpb destructive-button" id="clearOk">Clear</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
 
 <script>
-const canvas = document.getElementById('c');
-const ctx = canvas.getContext('2d');
-const colorBtn = document.getElementById('colorBtn');
-const sizeLabel = document.getElementById('sizeLabel');
-const viewersEl = document.getElementById('viewers');
-const statusEl = document.getElementById('status');
+// ─────────────────────────────────────────────
+//  BRUSHES (from 3_brush_list panels)
+// ─────────────────────────────────────────────
+const BRUSHES = ['Marker','Pixel Brush','Shapes','Airbrush','Dry brush','Wet brush',
+  'Velvet Pastel','Soft Watercolor','Flowing Watercolor','Flat brush',
+  'Quill','Ink','Pencil','Watercolor (texture)','Rembrandt',
+  'Dashed','Outline','Neon','Particles','Glyph','Test'];
 
-let W, H;
-function resize() {
-  W = canvas.width = window.innerWidth;
-  H = canvas.height = window.innerHeight - 50;
-  redraw();
-}
-window.addEventListener('resize', resize);
+// Swatches — 2 cols × 5 rows from debug (x=750,790 y=466-626)
+const SWATCHES_COL1 = [
+  'rgb(0,0,0)','rgb(248,248,248)','rgb(108,43,43)','rgb(14,14,14)','rgb(27,27,27)'
+];
+const SWATCHES_COL2 = [
+  'rgb(255,255,255)','rgb(218,75,75)','rgb(226,113,113)','rgb(246,169,169)','rgb(46,46,46)'
+];
 
-// State
-let strokes = [];
-let currentColor = '#1a1a1a';
+// ─────────────────────────────────────────────
+//  STATE
+// ─────────────────────────────────────────────
+let currentColor = '#0000ff';
+let currentHue = 240, currentS = 1, currentV = 1, currentA = 1;
 let currentSize = 10;
-let drawing = false;
-let pts = [];
+let currentBrush = 'Marker';
+let currentTool = 'brush';
+let strokes = [], drawing = false, pts = [];
+let savedColors = [];
 
-colorBtn.style.background = currentColor;
+// ─────────────────────────────────────────────
+//  CANVAS & LAYOUT
+// ─────────────────────────────────────────────
+const mainC = document.getElementById('mainCanvas');
+const tempC = document.getElementById('tempCanvas');
+const mc = mainC.getContext('2d');
+const tc = tempC.getContext('2d');
+const CTRL_H = 160, TOP_H = 38;
+let CW, CH, canvasTop, canvasLeft;
 
-function showStatus(msg) {
-  statusEl.textContent = msg;
-  statusEl.classList.remove('hidden');
-  clearTimeout(statusEl._t);
-  statusEl._t = setTimeout(() => statusEl.classList.add('hidden'), 2000);
+function layout() {
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const avH = vh - TOP_H - CTRL_H;
+  const ratio = 1016 / 1200;
+  let cw = vw - 10, ch = cw / ratio;
+  if (ch > avH) { ch = avH; cw = ch * ratio; }
+  cw = Math.floor(cw); ch = Math.floor(ch);
+  CW = cw; CH = ch;
+  canvasTop = TOP_H + Math.floor((avH - ch) / 2);
+  canvasLeft = Math.floor((vw - cw) / 2);
+
+  const pos = document.getElementById('canvas-pos');
+  pos.style.cssText = `top:${canvasTop}px;width:${cw}px;height:${ch}px`;
+  mainC.style.cssText = tempC.style.cssText = `width:${cw}px;height:${ch}px`;
+  mainC.width = tempC.width = 1016;
+  mainC.height = tempC.height = 1200;
+
+  document.getElementById('controls').style.cssText =
+    `top:${canvasTop + ch + 4}px;left:0;right:0`;
+
+  // Position width slider to left of canvas
+  const slWrap = document.getElementById('widthSliderWrap');
+  slWrap.style.cssText = `top:${canvasTop + Math.floor((ch-177)/2)}px;left:${Math.max(2,canvasLeft-30)}px;width:25px;height:177px`;
+
+  // Position color palette to right side of canvas
+  const pal = document.getElementById('colorPalette');
+  pal.style.cssText = `top:${canvasTop + Math.floor(ch*0.3)}px;left:${canvasLeft + cw - 220}px`;
+
+  // Position layer menu vertically centered on canvas
+  const lm = document.getElementById('layerMenu');
+  lm.style.top = `${canvasTop + Math.floor(ch * 0.4)}px`;
+
+  // Position word menu — right-center area
+  const wm = document.getElementById('wordMenu');
+  const wmW = Math.min(270, vw - 20);
+  wm.style.cssText = `top:${canvasTop + Math.floor(ch*0.2)}px;left:${canvasLeft + Math.floor(cw*0.38)}px;width:${wmW}px;max-height:${vh - canvasTop - 20}px;overflow-y:auto`;
+
+  redraw();
+  updateSizeBall();
 }
+window.addEventListener('resize', layout);
 
-// Drawing
-function drawStroke(s) {
+// ─────────────────────────────────────────────
+//  DRAWING
+// ─────────────────────────────────────────────
+function n2c(nx, ny) {
+  return { x: nx / 1000 * 1016, y: ny / 1000 * 1200 };
+}
+function strokeDraw(ctx, s) {
   if (!s.points || s.points.length < 2) return;
   ctx.beginPath();
   ctx.strokeStyle = s.color;
-  ctx.lineWidth = s.size;
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-  ctx.moveTo(s.points[0].x * W / 1000, s.points[0].y * H / 1000);
-  for (let i = 1; i < s.points.length; i++)
-    ctx.lineTo(s.points[i].x * W / 1000, s.points[i].y * H / 1000);
+  ctx.lineWidth = s.size * 1.2;
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  const p0 = n2c(s.points[0].x, s.points[0].y);
+  ctx.moveTo(p0.x, p0.y);
+  for (let i = 1; i < s.points.length; i++) {
+    const p = n2c(s.points[i].x, s.points[i].y);
+    ctx.lineTo(p.x, p.y);
+  }
   ctx.stroke();
 }
-
 function redraw() {
-  ctx.clearRect(0, 0, W, H);
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, W, H);
-  for (const s of strokes) drawStroke(s);
+  mc.fillStyle = '#fff'; mc.fillRect(0, 0, 1016, 1200);
+  strokes.forEach(s => strokeDraw(mc, s));
 }
 
-// User drawing (sends to server)
-function toCoord(e) {
-  const r = canvas.getBoundingClientRect();
+// ─────────────────────────────────────────────
+//  INPUT
+// ─────────────────────────────────────────────
+function getCoord(e) {
+  const r = tempC.getBoundingClientRect();
   const src = e.touches ? e.touches[0] : e;
   return {
-    x: Math.round((src.clientX - r.left) / W * 1000),
-    y: Math.round((src.clientY - r.top) / H * 1000)
+    x: Math.round((src.clientX - r.left) / r.width * 1000),
+    y: Math.round((src.clientY - r.top) / r.height * 1000)
   };
 }
 
-canvas.addEventListener('mousedown', e => { drawing = true; pts = [toCoord(e)]; });
-canvas.addEventListener('mousemove', e => {
-  if (!drawing) return;
-  pts.push(toCoord(e));
-  // live preview
-  ctx.clearRect(0, 0, W, H);
-  ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, W, H);
-  for (const s of strokes) drawStroke(s);
-  drawStroke({ color: currentColor, size: currentSize, points: pts });
-});
-canvas.addEventListener('mouseup', finishStroke);
-canvas.addEventListener('touchstart', e => { e.preventDefault(); drawing = true; pts = [toCoord(e)]; });
-canvas.addEventListener('touchmove', e => { e.preventDefault(); if (!drawing) return; pts.push(toCoord(e)); ctx.clearRect(0,0,W,H); ctx.fillStyle='#fff'; ctx.fillRect(0,0,W,H); for(const s of strokes) drawStroke(s); drawStroke({color:currentColor,size:currentSize,points:pts}); });
-canvas.addEventListener('touchend', finishStroke);
+tempC.addEventListener('mousedown', onDown);
+tempC.addEventListener('touchstart', e => { e.preventDefault(); onDown(e); }, { passive: false });
+tempC.addEventListener('mousemove', onMove);
+tempC.addEventListener('touchmove', e => { e.preventDefault(); onMove(e); }, { passive: false });
+tempC.addEventListener('mouseup', onUp);
+tempC.addEventListener('touchend', onUp);
+document.addEventListener('mouseup', () => { if (drawing) onUp(); });
 
-function finishStroke() {
-  if (!drawing || pts.length < 2) { drawing = false; return; }
+function onDown(e) {
+  closeAll();
+  if (currentTool === 'fill') {
+    const c = getCoord(e);
+    sendWS({ type: 'fill', x: c.x, y: c.y });
+    toast('🪣 Fill');
+    return;
+  }
+  drawing = true;
+  pts = [getCoord(e)];
+}
+function onMove(e) {
+  if (!drawing) return;
+  pts.push(getCoord(e));
+  tc.clearRect(0, 0, 1016, 1200);
+  strokeDraw(tc, { color: currentColor, size: currentSize, points: pts });
+}
+function onUp() {
+  if (!drawing) return;
   drawing = false;
+  if (pts.length < 2) { pts = []; return; }
   const s = { color: currentColor, size: currentSize, points: pts };
   strokes.push(s);
-  redraw();
-  if (ws && ws.readyState === WebSocket.OPEN)
-    ws.send(JSON.stringify({ type: 'user_stroke', ...s }));
+  tc.clearRect(0, 0, 1016, 1200);
+  strokeDraw(mc, s);
+  sendWS({ type: 'user_stroke', ...s });
   pts = [];
 }
 
-// WebSocket
-let ws, reconnectTimer;
+// ─────────────────────────────────────────────
+//  WEBSOCKET
+// ─────────────────────────────────────────────
+let ws, rTimer;
 function connect() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   ws = new WebSocket(`${proto}://${location.host}/ws`);
-
-  ws.onopen = () => { showStatus('🟢 Connected'); };
-
-  ws.onmessage = (e) => {
+  ws.onopen = () => toast('🟢 Connected');
+  ws.onmessage = e => {
     const m = JSON.parse(e.data);
-    switch (m.type) {
-      case 'init':
-        strokes = m.strokes || [];
-        currentColor = m.color || '#1a1a1a';
-        currentSize = m.size || 10;
-        colorBtn.style.background = currentColor;
-        sizeLabel.textContent = currentSize + 'px';
-        viewersEl.textContent = '👁 ' + (m.viewers || 0);
-        redraw();
-        break;
-      case 'stroke_end':
-        strokes.push({ color: m.color, size: m.size, points: m.points });
-        drawStroke({ color: m.color, size: m.size, points: m.points });
-        break;
-      case 'clear':
-        strokes = [];
-        redraw();
-        showStatus('🗑 Canvas cleared');
-        break;
-      case 'color':
-        currentColor = m.hex;
-        colorBtn.style.background = m.hex;
-        showStatus('🎨 Color: ' + m.hex);
-        break;
-      case 'size':
-        currentSize = m.px;
-        sizeLabel.textContent = m.px + 'px';
-        showStatus('📏 Size: ' + m.px + 'px');
-        break;
-      case 'undo':
-        strokes = m.strokes || [];
-        redraw();
-        showStatus('↩️ Undone');
-        break;
-      case 'viewers':
-        viewersEl.textContent = '👁 ' + m.count;
-        break;
+    if (m.type === 'stroke_end') {
+      const s = { color: m.color, size: m.size, points: m.points };
+      strokes.push(s); strokeDraw(mc, s);
     }
+    if (m.type === 'clear') { strokes = []; redraw(); toast('🗑 Cleared'); }
+    if (m.type === 'color') applyColor(m.hex, false);
+    if (m.type === 'size') applySize(m.px, false);
+    if (m.type === 'undo') { strokes = m.strokes || []; redraw(); toast('↩ Undone'); }
+    if (m.type === 'word') setWord(m.word);
   };
-
   ws.onclose = () => {
-    showStatus('🔴 Disconnected, reconnecting...');
-    clearTimeout(reconnectTimer);
-    reconnectTimer = setTimeout(connect, 3000);
+    toast('🔴 Reconnecting...');
+    clearTimeout(rTimer);
+    rTimer = setTimeout(connect, 3000);
   };
 }
+function sendWS(o) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
 
-resize();
+// ─────────────────────────────────────────────
+//  TOOL / COLOR / SIZE
+// ─────────────────────────────────────────────
+function setTool(t) {
+  currentTool = t;
+  document.querySelectorAll('.cs').forEach(b => b.classList.remove('active'));
+  const map = { brush: 'btnBrush', eraser: 'btnEraser', fill: 'btnFill', eyedrop: 'btnEyedrop' };
+  if (map[t]) document.getElementById(map[t])?.classList.add('active');
+}
+
+function applyColor(hex, send = true) {
+  currentColor = hex;
+  document.getElementById('colorInner').style.background = hex;
+  document.getElementById('hexInput').value = hex;
+  updateSizeBall();
+  if (send) sendWS({ type: 'color', hex });
+}
+
+function applySize(px, send = true) {
+  currentSize = px;
+  document.getElementById('widthSlider').value = px;
+  document.getElementById('brushInfo').innerHTML = px + 'px<br>100%';
+  updateSizeBall();
+  if (send) sendWS({ type: 'size', px });
+}
+
+function updateSizeBall() {
+  const d = Math.max(12, Math.min(38, currentSize * 0.38));
+  const inner = document.getElementById('sizeInner');
+  inner.style.cssText = `width:${d}px;height:${d}px;background:${currentColor}`;
+  document.getElementById('sizeLbl').textContent = 'x' + (currentSize / 10).toFixed(1);
+  document.getElementById('sizeLbl').style.fontSize = Math.max(7, d * 0.28) + 'px';
+}
+
+// ─────────────────────────────────────────────
+//  WORD
+// ─────────────────────────────────────────────
+let currentWord = 'word';
+function setWord(w) {
+  currentWord = w;
+  document.getElementById('word').textContent = w + ' ⚙️';
+  document.getElementById('wordMenuTitle').textContent = w + ' ⚙️';
+  buildHints(w);
+}
+function buildHints(w) {
+  const letters = w.replace(/\s+/g, '').toUpperCase().split('');
+  const r1 = document.getElementById('hintsRow1');
+  const r2 = document.getElementById('hintsRow2');
+  r1.innerHTML = ''; r2.innerHTML = '';
+  const half = Math.ceil(letters.length / 2);
+  letters.forEach((l, i) => {
+    const btn = document.createElement('button');
+    btn.className = 'hint-btn'; btn.textContent = l;
+    btn.addEventListener('click', () => {
+      btn.classList.add('active');
+      sendWS({ type: 'hint', index: i });
+    });
+    (i < half ? r1 : r2).appendChild(btn);
+  });
+}
+
+// ─────────────────────────────────────────────
+//  PANEL OPEN/CLOSE
+// ─────────────────────────────────────────────
+function closeAll() {
+  document.getElementById('brushOverlay').classList.remove('show');
+  document.getElementById('layerMenu').classList.remove('show');
+  document.getElementById('wordMenu').classList.remove('show');
+  document.getElementById('colorPalette').classList.remove('show');
+  document.getElementById('widthSliderWrap').classList.remove('show');
+  document.getElementById('clearDialog').classList.remove('show');
+  // deactivate colorBall highlight
+  document.getElementById('colorBall').style.borderColor = '#cc905c';
+}
+
+function openColor() {
+  closeAll();
+  document.getElementById('colorPalette').classList.add('show');
+  document.getElementById('widthSliderWrap').classList.add('show');
+  renderHSV();
+}
+function openBrush() { closeAll(); document.getElementById('brushOverlay').classList.add('show'); }
+function openLayers() { closeAll(); document.getElementById('layerMenu').classList.add('show'); }
+function openWord() { closeAll(); document.getElementById('wordMenu').classList.add('show'); }
+
+// ─────────────────────────────────────────────
+//  BUTTON WIRING
+// ─────────────────────────────────────────────
+document.getElementById('btnBrush').addEventListener('click', () => {
+  currentTool === 'brush' ? openBrush() : setTool('brush');
+});
+document.getElementById('btnEraser').addEventListener('click', () => {
+  if (currentTool === 'eraser') openBrush();
+  else { setTool('eraser'); sendWS({ type: 'brush', name: 'Eraser' }); toast('🧹 Eraser'); }
+});
+document.getElementById('btnFill').addEventListener('click', () => {
+  setTool(currentTool === 'fill' ? 'brush' : 'fill');
+  toast(currentTool === 'fill' ? '🪣 Fill mode' : '🖌 Brush');
+});
+document.getElementById('btnEyedrop').addEventListener('click', () => {
+  setTool('eyedrop'); toast('💉 Eyedropper');
+});
+document.getElementById('colorBall').addEventListener('click', openColor);
+document.getElementById('btnUndo').addEventListener('click', () => { sendWS({ type: 'undo' }); toast('↩ Undo'); });
+document.getElementById('btnRedo').addEventListener('click', () => { sendWS({ type: 'redo' }); toast('↪ Redo'); });
+document.getElementById('btnClear').addEventListener('click', () => {
+  closeAll();
+  document.getElementById('clearDialog').classList.add('show');
+});
+document.getElementById('btnLayers').addEventListener('click', openLayers);
+document.getElementById('sizeBall').addEventListener('click', openColor);
+document.getElementById('word').addEventListener('click', openWord);
+document.getElementById('confirm-btn').addEventListener('click', () => {
+  sendWS({ type: 'confirm' }); toast('✅ Done!');
+});
+
+// ─────────────────────────────────────────────
+//  SIZE BALL DRAG (ns-resize)
+// ─────────────────────────────────────────────
+let sd = false, sy0 = 0, sv0 = 0;
+const sb = document.getElementById('sizeBall');
+sb.addEventListener('mousedown', e => { sd = true; sy0 = e.clientY; sv0 = currentSize; e.preventDefault(); });
+document.addEventListener('mousemove', e => { if (!sd) return; applySize(Math.max(1, Math.min(100, sv0 + Math.round((sy0 - e.clientY) / 2)))); });
+document.addEventListener('mouseup', () => sd = false);
+sb.addEventListener('touchstart', e => { sd = true; sy0 = e.touches[0].clientY; sv0 = currentSize; e.preventDefault(); }, { passive: false });
+document.addEventListener('touchmove', e => { if (!sd) return; applySize(Math.max(1, Math.min(100, sv0 + Math.round((sy0 - e.touches[0].clientY) / 2)))); });
+document.addEventListener('touchend', () => sd = false);
+
+// ─────────────────────────────────────────────
+//  HSV COLOR PICKER
+// ─────────────────────────────────────────────
+const hsvCanvas = document.getElementById('hsvCanvas');
+const hsvCtx = hsvCanvas.getContext('2d');
+let hsvDragging = false;
+
+function renderHSV() {
+  const W = hsvCanvas.width, H = hsvCanvas.height;
+  // Draw saturation/value gradient for current hue
+  const hueColor = `hsl(${currentHue},100%,50%)`;
+  // White→hue horizontal
+  const gradH = hsvCtx.createLinearGradient(0, 0, W, 0);
+  gradH.addColorStop(0, '#fff'); gradH.addColorStop(1, hueColor);
+  hsvCtx.fillStyle = gradH; hsvCtx.fillRect(0, 0, W, H);
+  // Black vertical overlay
+  const gradV = hsvCtx.createLinearGradient(0, 0, 0, H);
+  gradV.addColorStop(0, 'rgba(0,0,0,0)'); gradV.addColorStop(1, '#000');
+  hsvCtx.fillStyle = gradV; hsvCtx.fillRect(0, 0, W, H);
+}
+
+function hsvToHex(h, s, v) {
+  let r, g, b;
+  const i = Math.floor(h / 60) % 6;
+  const f = h / 60 - Math.floor(h / 60);
+  const p = v * (1 - s), q = v * (1 - f * s), t = v * (1 - (1 - f) * s);
+  [r, g, b] = [[v,t,p],[q,v,p],[p,v,t],[p,q,v],[t,p,v],[v,p,q]][i];
+  return '#' + [r,g,b].map(x => Math.round(x*255).toString(16).padStart(2,'0')).join('');
+}
+
+hsvCanvas.addEventListener('mousedown', e => { hsvDragging = true; updateHSV(e); });
+hsvCanvas.addEventListener('mousemove', e => { if (hsvDragging) updateHSV(e); });
+document.addEventListener('mouseup', () => hsvDragging = false);
+hsvCanvas.addEventListener('touchstart', e => { hsvDragging = true; updateHSV(e.touches[0]); }, { passive: true });
+hsvCanvas.addEventListener('touchmove', e => { if (hsvDragging) updateHSV(e.touches[0]); }, { passive: true });
+
+function updateHSV(e) {
+  const r = hsvCanvas.getBoundingClientRect();
+  const sx = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+  const sy = Math.max(0, Math.min(1, (e.clientY - r.top) / r.height));
+  currentS = sx; currentV = 1 - sy;
+  const hex = hsvToHex(currentHue, currentS, currentV);
+  applyColor(hex);
+}
+
+// Hue strip
+const hueStrip = document.getElementById('hueStrip');
+let hueDrag = false;
+hueStrip.addEventListener('mousedown', e => { hueDrag = true; updateHue(e); });
+document.addEventListener('mousemove', e => { if (hueDrag) updateHue(e); });
+document.addEventListener('mouseup', () => hueDrag = false);
+hueStrip.addEventListener('touchstart', e => { hueDrag = true; updateHue(e.touches[0]); }, { passive: true });
+hueStrip.addEventListener('touchmove', e => { if (hueDrag) updateHue(e.touches[0]); }, { passive: true });
+
+function updateHue(e) {
+  const r = hueStrip.getBoundingClientRect();
+  const pct = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+  currentHue = Math.round(pct * 360);
+  document.getElementById('huePtr').style.left = (pct * 100) + '%';
+  renderHSV();
+  applyColor(hsvToHex(currentHue, currentS, currentV));
+}
+
+// Hex input
+document.getElementById('hexInput').addEventListener('change', e => {
+  let v = e.target.value.trim();
+  if (!v.startsWith('#')) v = '#' + v;
+  if (/^#[0-9a-fA-F]{6}$/.test(v)) applyColor(v);
+});
+document.getElementById('hexInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { let v = e.target.value.trim(); if (!v.startsWith('#')) v='#'+v; applyColor(v); }
+});
+
+// Width slider (vertical)
+document.getElementById('widthSlider').addEventListener('input', e => applySize(+e.target.value));
+
+// Build swatch columns
+[SWATCHES_COL1, SWATCHES_COL2].forEach((col, ci) => {
+  const el = document.getElementById(ci === 0 ? 'swCol1' : 'swCol2');
+  col.forEach(c => {
+    const d = document.createElement('div');
+    d.className = 'sw'; d.style.background = c;
+    if (c === 'rgb(255,255,255)' || c === 'rgb(248,248,248)') d.style.border = '2px solid var(--hint)';
+    d.addEventListener('click', () => { applyColor(c); closeAll(); });
+    el.appendChild(d);
+  });
+});
+
+// Add saved color
+document.getElementById('addSaved').addEventListener('click', () => {
+  if (savedColors.includes(currentColor)) return;
+  savedColors.push(currentColor);
+  const d = document.createElement('div');
+  d.className = 'saved-dot'; d.style.background = currentColor;
+  const c = currentColor;
+  d.addEventListener('click', () => { applyColor(c); closeAll(); });
+  const row = document.getElementById('savedRow');
+  row.insertBefore(d, document.getElementById('addSaved'));
+});
+
+// Alpha strip (basic)
+const alphaStrip = document.getElementById('alphaStrip');
+alphaStrip.style.background = `linear-gradient(to right,transparent,${currentColor})`;
+
+// ─────────────────────────────────────────────
+//  BRUSH LIST
+// ─────────────────────────────────────────────
+const brushScroll = document.getElementById('brushListScroll');
+BRUSHES.forEach(b => {
+  const row = document.createElement('div');
+  row.className = 'brow' + (b === currentBrush ? ' active' : '');
+  row.innerHTML = `<div class="brow-icon"><svg width="22" height="22" viewBox="0 0 512 512" fill="currentColor"><path d="M481 31C445.1-4.8 386.9-4.8 351 31l-15 15L322.9 33C294.8 4.9 249.2 4.9 221.1 33L135 119c-9.4 9.4-9.4 24.6 0 33.9s24.6 9.4 33.9 0L255 66.9c9.4-9.4 24.6-9.4 33.9 0L302.1 80 186.3 195.7 316.3 325.7 481 161c35.9-35.9 35.9-94.1 0-129.9z"/></svg></div><span class="brow-name">${b}</span><span class="brow-drag">☰</span>`;
+  row.addEventListener('click', () => {
+    currentBrush = b;
+    brushScroll.querySelectorAll('.brow').forEach(r => r.classList.remove('active'));
+    row.classList.add('active');
+    sendWS({ type: 'brush', name: b });
+    toast('🖌 ' + b);
+    closeAll();
+  });
+  brushScroll.appendChild(row);
+});
+document.querySelectorAll('.cat-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.cat-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  });
+});
+document.getElementById('brushBack').addEventListener('click', closeAll);
+document.getElementById('brushClose').addEventListener('click', closeAll);
+
+// ─────────────────────────────────────────────
+//  LAYERS
+// ─────────────────────────────────────────────
+document.getElementById('layerAdd').addEventListener('click', () => { sendWS({ type: 'layer_add' }); toast('➕ Layer added'); });
+document.getElementById('layerDel').addEventListener('click', () => { sendWS({ type: 'layer_del' }); toast('🗑 Layer deleted'); });
+document.getElementById('transformCb').addEventListener('change', e => {
+  sendWS({ type: 'layer_transform', val: e.target.checked });
+});
+document.getElementById('bgColorItem').addEventListener('click', () => {
+  openColor();
+  toast('Pick background color');
+});
+
+// Close layer menu when clicking outside
+document.addEventListener('click', e => {
+  const lm = document.getElementById('layerMenu');
+  const lb = document.getElementById('btnLayers');
+  if (!lm.contains(e.target) && !lb.contains(e.target)) lm.classList.remove('show');
+});
+
+// ─────────────────────────────────────────────
+//  WORD MENU
+// ─────────────────────────────────────────────
+document.getElementById('wordMenuClose').addEventListener('click', closeAll);
+document.getElementById('changeWord').addEventListener('click', () => {
+  sendWS({ type: 'change_word' }); toast('🔄 Changing...'); closeAll();
+});
+
+// ─────────────────────────────────────────────
+//  CLEAR DIALOG
+// ─────────────────────────────────────────────
+document.getElementById('clearCancel').addEventListener('click', closeAll);
+document.getElementById('clearOk').addEventListener('click', () => {
+  strokes = []; redraw(); sendWS({ type: 'clear' }); toast('🗑 Cleared'); closeAll();
+});
+
+// ─────────────────────────────────────────────
+//  TOAST
+// ─────────────────────────────────────────────
+let toastTimer;
+function toast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg; el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 2000);
+}
+
+// ─────────────────────────────────────────────
+//  INIT
+// ─────────────────────────────────────────────
+layout();
+applyColor('#0000ff', false);
+applySize(10, false);
+setWord('word');
 connect();
 </script>
 </body>
